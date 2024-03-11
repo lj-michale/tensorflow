@@ -45,6 +45,7 @@ limitations under the License.
 #include "mlir/IR/BuiltinAttributeInterfaces.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/IRMapping.h"  // from @llvm-project
 #include "mlir/IR/ImplicitLocOpBuilder.h"  // from @llvm-project
 #include "mlir/IR/TypeRange.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
@@ -58,6 +59,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/mlir/utils/type_util.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/mlir_hlo/mhlo/transforms/map_mhlo_to_scalar_op.h"
 #include "xla/mlir_hlo/mhlo/utils/type_conversion.h"
@@ -80,7 +82,9 @@ namespace {
 
 using llvm::SmallVector;
 using llvm::SmallVectorImpl;
+using mlir::Block;
 using mlir::ImplicitLocOpBuilder;
+using mlir::IRMapping;
 using mlir::Location;
 using mlir::OpBuilder;
 using mlir::Value;
@@ -558,7 +562,7 @@ absl::StatusOr<SmallVector<Value>> HloToMlir(
   mlir::Type result_element_type;
   if (!instr->shape().IsTuple()) {
     TF_ASSIGN_OR_RETURN(element_mlir_type,
-                        ConvertPrimitiveTypeToMLIRType(element_type, builder));
+                        ConvertPrimitiveTypeToMlirType(element_type, builder));
 
     // During mapping to the arith dialect, we need to convert from signed
     // integer types to signless integer types. Most mappings can infer the
@@ -636,7 +640,7 @@ absl::StatusOr<SmallVector<Value>> HloToMlir(
   arg_types.reserve(instr->operands().size());
   for (auto operand : instr->operands()) {
     TF_ASSIGN_OR_RETURN(auto operand_element_type,
-                        ConvertPrimitiveTypeToMLIRType(
+                        ConvertPrimitiveTypeToMlirType(
                             operand->shape().element_type(), builder));
     arg_types.push_back(operand_element_type);
   }
@@ -1132,6 +1136,25 @@ mlir::Value ClampIndex(mlir::Value index, bool is_unsigned, int64_t high,
     index = b.create<arith::MaxSIOp>(index, zero);
   }
   return index;
+}
+
+SmallVector<Value, 2> InlineBlock(OpBuilder& builder, Block& src_block,
+                                  ValueRange mapped_args) {
+  IRMapping mapping;
+  for (auto [from, to] : llvm::zip(src_block.getArguments(), mapped_args)) {
+    mapping.map(from, to);
+  }
+  for (auto& op : src_block.without_terminator()) {
+    builder.clone(op, mapping);
+  }
+  auto* terminator = src_block.getTerminator();
+  SmallVector<Value, 2> mapped_results;
+
+  mapped_results.reserve(terminator->getResults().size());
+  for (mlir::Value result : src_block.getTerminator()->getOperands()) {
+    mapped_results.push_back(mapping.lookup(result));
+  }
+  return mapped_results;
 }
 
 }  // namespace mlir_converter

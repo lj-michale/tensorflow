@@ -155,6 +155,8 @@ void AddPreQuantizationStableHloToTfPasses(
       mlir::mhlo::createChloLegalizeToHloBasisOpsPass());
   pass_manager.addNestedPass<mlir::func::FuncOp>(
       mlir::mhlo::createChloLegalizeToHloPass());
+  pass_manager.addNestedPass<mlir::func::FuncOp>(
+      mlir::mhlo::createShapeLegalizeToHloPass());
   pass_manager.addPass(mlir::mhlo::createHloLegalizeToStablehloPass());
 
   // The following two passes find specific uniform quantization patterns in
@@ -455,6 +457,7 @@ void AddPostVariableFreezingTFToTFLConversionPasses(
       pass_manager->addNestedPass<mlir::func::FuncOp>(
           mlir::TFL::CreateOptimizeBatchMatmulPass());
     }
+    pass_manager->addPass(mlir::TFL::CreatePushTransposeThroughEwisePass());
     pass_manager->addNestedPass<mlir::func::FuncOp>(
         mlir::TFL::CreateOptimizePass(/*enable_canonicalization=*/true,
                                       toco_flags.disable_fuse_mul_and_fc()));

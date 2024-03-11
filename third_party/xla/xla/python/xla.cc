@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "xla/python/xla.h"
 
+#include <Python.h>
+
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -55,6 +57,7 @@ limitations under the License.
 #include "pybind11/stl.h"  // from @pybind11
 #include "pybind11/stl_bind.h"  // from @pybind11
 #include "pybind11_abseil/absl_casters.h"  // from @pybind11_abseil
+#include "xla/ffi/ffi_api.h"
 #include "xla/layout_util.h"
 #include "xla/pjrt/distributed/client.h"
 #include "xla/pjrt/distributed/distributed.h"
@@ -798,8 +801,8 @@ static void Init(py::module_& m) {
         });
 
   TF_CHECK_OK(PyArray::RegisterTypes(m));
-  jax::RegisterDeviceList(m);
-  jax::RegisterSharding(m);
+  jax::RegisterDeviceList(m_nb);
+  jax::RegisterSharding(m_nb);
 
   py::class_<CompiledMemoryStats>(m, "CompiledMemoryStats")
       .def_readwrite("generated_code_size_in_bytes",
@@ -990,9 +993,9 @@ static void Init(py::module_& m) {
   BuildOpsSubmodule(m_nb);
   BuildOutfeedReceiverSubmodule(m_nb);
   BuildPytreeSubmodule(m_nb);
-  jax::BuildJaxjitSubmodule(m);
-  jax::BuildPmapSubmodule(m);
-  jax::BuildPjitSubmodule(m);
+  jax::BuildJaxjitSubmodule(m_nb);
+  jax::BuildPmapSubmodule(m_nb);
+  jax::BuildPjitSubmodule(m_nb);
   jax::BuildTransferGuardSubmodule(m_nb);
   BuildTracebackSubmodule(m_nb);
   BuildMlirSubmodule(m_nb);
@@ -1334,11 +1337,9 @@ static void Init(py::module_& m) {
       py::arg("committed") = true, py::arg("force_copy") = false,
       py::arg("host_buffer_semantics") =
           PjRtClient::HostBufferSemantics::kZeroCopy);
-  m.def(
-      "check_and_canonicalize_memory_kind",
-      [](py::object memory_kind, jax::PyDeviceList* device_list) -> py::object {
-        return jax::CheckAndCanonicalizeMemoryKind(memory_kind, device_list);
-      });
+  m_nb.def("check_and_canonicalize_memory_kind",
+           &jax::CheckAndCanonicalizeMemoryKind, nb::arg("memory_kind").none(),
+           nb::arg("device_list"));
 }  // NOLINT(readability/fn_size)
 
 // This code in essence is a copy of PYBIND11_MODULE(). We can't just call

@@ -1271,39 +1271,21 @@ class RewriteQuantizedConvolutionOp
         get_dim_size(op->getResult(0).getType().cast<ShapedType>().getShape(),
                      dimension_numbers.getOutputSpatialDimensions());
 
-    // Padding has [[h_low, h_high], [w_low, w_high]] format.
-    const auto padding = GetPadding(op);
     const auto [stride_height, stride_width] = GetStrides(op);
 
-    const auto [kernel_height, kernel_width] =
-        get_dim_size(op->getOperand(1).getType().cast<ShapedType>().getShape(),
-                     dimension_numbers.getKernelSpatialDimensions());
-
     // Below convolution arithmetic for `SAME` padding calculation is referenced
-    // from https://arxiv.org/pdf/1603.07285.pdf.
-    if (stride_height == 1 && stride_width == 1) {
-      // Ref: <Section 2.2> Zero Padding, unit strides > Half (same) padding
-      // For unit strides, the following must be true:
-      // output_dim = input_dim
-      return output_height == input_height && output_width == input_width;
-    }
-    // Ref: <Section 2.4> Zero padding, non-unit strides
-    // Padding is `SAME` if the following is true:
-    // output_dim = floor((input_dim + paddings - kernel_dim) / stride) + 1
-    auto get_output_dim_for_same_padding =
-        [](int64_t height, int64_t padding_low, int64_t padding_high,
-           int64_t kernel_height, int64_t stride_height) -> int64_t {
-      return std::floor((height + padding_low + padding_high - kernel_height) /
-                        stride_height) +
-             1;
-    };
+    // from https://www.tensorflow.org/api_docs/python/tf/nn/convolution.
+    // The following condition must hold true for padding to be `SAME`:
+    // output_spatial_shape[i] = ceil(input_spatial_shape[i] / strides[i])
 
-    return output_height == get_output_dim_for_same_padding(
-                                input_height, padding[0], padding[1],
-                                kernel_height, stride_height) &&
-           output_width == get_output_dim_for_same_padding(
-                               input_width, padding[2], padding[3],
-                               kernel_width, stride_width);
+    auto get_output_dim_for_same_padding = [](int64_t input_dim,
+                                              int64_t stride_dim) -> int64_t {
+      return std::ceil(input_dim / stride_dim);
+    };
+    return output_height ==
+               get_output_dim_for_same_padding(input_height, stride_height) &&
+           output_width ==
+               get_output_dim_for_same_padding(input_width, stride_width);
   }
 
   // Determines if the padding attribute corresponds to "VALID" or "SAME".
