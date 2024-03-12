@@ -1,5 +1,4 @@
-
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,23 +12,24 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-
-#include "tensorflow/core/tfrt/ifrt/ifrt_model_context.h"
-
-#include <utility>
+#include "tensorflow/lite/experimental/shlo/ops/util.h"
 
 #include "absl/status/status.h"
-#include "absl/strings/string_view.h"
-#include "xla/python/ifrt/array.h"
-#include "tsl/concurrency/ref_count.h"
-#include "tsl/platform/threadpool.h"
+#include "tensorflow/lite/experimental/shlo/shape.h"
 
-namespace tensorflow {
-namespace ifrt_serving {
+namespace shlo_ref {
 
-const tsl::thread::ThreadPool& IfrtModelContext::GetThreadPool() const {
-  return thread_pool_;
+absl::Status Propagate(const Shape& input_shape, Shape& output_shape) {
+  if (output_shape.Dimensions().empty()) {
+    output_shape = input_shape;
+  } else {
+    if (output_shape != input_shape) {
+      return absl::FailedPreconditionError(
+          "The specified output tensor shape is not compatible with the input "
+          "shape.");
+    }
+  }
+  return absl::OkStatus();
 }
 
-}  // namespace ifrt_serving
-}  // namespace tensorflow
+}  // namespace shlo_ref

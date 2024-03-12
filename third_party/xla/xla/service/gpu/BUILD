@@ -556,6 +556,7 @@ cc_library(
         "@triton//:TritonNvidiaGPUTransforms",
         "@triton//:TritonLLVMIR",
         "@triton//:TritonToTritonGPU",
+        "@triton//:TritonGPUToLLVM",
     ]),
 )
 
@@ -2029,7 +2030,6 @@ cc_library(
         "//xla:permutation_util",
         "//xla:shape_util",
         "//xla:status",
-        "//xla:statusor",
         "//xla:util",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
@@ -2050,6 +2050,7 @@ xla_cc_test(
     tags = tf_cuda_tests_tags(),
     deps = [
         ":dot_dimension_sorter",
+        "//xla:error_spec",
         "//xla/hlo/ir:hlo",
         "//xla/service:gpu_plugin",
         "//xla/service/gpu/tests:gpu_codegen_test",
