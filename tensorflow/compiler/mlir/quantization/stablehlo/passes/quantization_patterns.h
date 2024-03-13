@@ -23,7 +23,6 @@ limitations under the License.
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/Casting.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/Quant/QuantTypes.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
@@ -32,7 +31,6 @@ limitations under the License.
 #include "mlir/IR/IRMapping.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "mlir/IR/Matchers.h"  // from @llvm-project
 #include "mlir/IR/OpDefinition.h"  // from @llvm-project
 #include "mlir/IR/OperationSupport.h"  // from @llvm-project
 #include "mlir/IR/PatternMatch.h"  // from @llvm-project
@@ -62,20 +60,19 @@ bool IsConnectedWithQuantizedCompsiteFunction(Operation* same_scale_op);
 // Each matched pattern are rewritten by its quantized alternatives.
 //
 // The concrete pattern, extends from this base pattern, can specify whether it
-// allows dynamic range quantized operands and results for the operations in the
-// current context. These "DynamicRangeQuantized" operands and results don't
-// have quantization parameters propagated to, so will be in float in the
-// quantized results. The concrete pattern should define the following two
-// functions:
+// allows hybrid quantization. If it is allowed, for operand/result that is not
+// adjacent to dequantize/quantize op, it remains as float. For operand/result
+// that is adjacent to dequantize/quantize, it is quantized. Hybrid quantization
+// can be used to generate both weight-only quantization and dynamic range
+// quantization. The condition for allowing hybrid quantization or not for an op
+// can be specified in the below function:
 //
-//   bool AllowDynamicRangeQuantizedOperand(Operation&) const
-//   bool AllowDynamicRangeQuantizedResult(Operation&) const
+//    static bool AllowHybridQuantization(Operation& op)
 //
-// Full integer quantization disallows "DynamicRangeQuantized" operands or
-// results. Dynamic range quantization allows "DynamicRangeQuantized" operands
-// and results.
+// This is a templatized `OpRewritePattern<RootOpT>`.
 //
 // Template constraints are imposed as follows:
+//
 // * `QuantizeOpT` should have only one operand.
 // * `DequantizeOpT` should have only one result.
 template <typename ConcreteT, typename QuantizeOpT, typename DequantizeOpT,
@@ -83,17 +80,12 @@ template <typename ConcreteT, typename QuantizeOpT, typename DequantizeOpT,
           typename = std::enable_if_t<
               QuantizeOpT::template hasTrait<OpTrait::OneOperand>() &&
               DequantizeOpT::template hasTrait<OpTrait::OneResult>()>>
-class StableHloQuantizationPattern : public RewritePattern {
+class StableHloQuantizationPattern : public OpRewritePattern<RootOpT> {
  public:
-  using BaseType =
-      StableHloQuantizationPattern<ConcreteT, QuantizeOpT, DequantizeOpT,
-                                   VerifierT, RootOpT>;
-
-  explicit StableHloQuantizationPattern(MLIRContext* context,
-                                        const QuantPassSpec& quant_params)
-      // Set the score to a large number so it is always preferred.
-      : RewritePattern(RootOpT::getOperationName(), /*benefit=*/300, context),
-        quant_params_(quant_params) {}
+  StableHloQuantizationPattern(MLIRContext* context, QuantPassSpec quant_params)
+      // Set the benefit to a large number so that it is always preferred.
+      : OpRewritePattern<RootOpT>(context, /*benefit=*/300),
+        quant_params_(std::move(quant_params)) {}
 
  private:
   // Collects all candidate ops for quantization, which are the
@@ -132,11 +124,10 @@ class StableHloQuantizationPattern : public RewritePattern {
     return SmallVector<Operation*>{operand_op};
   }
 
-  LogicalResult matchAndRewrite(Operation* op,
+  LogicalResult matchAndRewrite(RootOpT op,
                                 PatternRewriter& rewriter) const override {
     // Collect all the candidate ops for quantization.
-    FailureOr<SmallVector<Operation*>> candidate_ops =
-        CollectCandidateOps(cast<RootOpT>(op));
+    FailureOr<SmallVector<Operation*>> candidate_ops = CollectCandidateOps(op);
     // Safeguard check to ensure that there is at least one quantizable op.
     if (failed(candidate_ops) || candidate_ops->empty()) return failure();
 
@@ -144,13 +135,12 @@ class StableHloQuantizationPattern : public RewritePattern {
         quant_params_.quant_spec.ops_blocklist;
     const absl::flat_hash_set<std::string>& nodes_blocklist =
         quant_params_.quant_spec.nodes_blocklist;
-    const CustomMap& custom_map = quant_params_.quant_spec.custom_map;
 
     // Rewrite the floating-point ops to the quantized version, by fusing
     // preceding dequantize ops and succeding quantize ops.
     for (Operation* candidate_op : *candidate_ops) {
       // If it is requantize op, we shouldn't rewrite this op.
-      if (llvm::isa<QuantizeOpT, DequantizeOpT>(candidate_op)) {
+      if (isa<QuantizeOpT, DequantizeOpT>(candidate_op)) {
         return failure();
       }
 
@@ -159,9 +149,7 @@ class StableHloQuantizationPattern : public RewritePattern {
         return failure();
       }
 
-      if (!IsOpQuantizableStableHlo(candidate_op) &&
-          !static_cast<const ConcreteT*>(this)->IsQuantizableCustomOp(
-              *candidate_op, custom_map)) {
+      if (!IsOpQuantizableStableHlo(candidate_op)) {
         return failure();
       }
 
@@ -172,7 +160,7 @@ class StableHloQuantizationPattern : public RewritePattern {
       }
 
       // Ops with regions will be quantized in a separate pattern.
-      if (llvm::isa<mlir::stablehlo::ReduceWindowOp>(candidate_op)) {
+      if (isa<mlir::stablehlo::ReduceWindowOp>(candidate_op)) {
         return failure();
       }
 
@@ -213,6 +201,9 @@ class StableHloQuantizationPattern : public RewritePattern {
           // If the operand is an integer tensor, then it doesn't require the
           // DequantizeOp in the pattern.
           inputs.push_back(operand);
+        } else if (static_cast<const ConcreteT*>(this)->AllowHybridQuantization(
+                       *candidate_op)) {
+          inputs.push_back(operand);
         } else {
           return failure();
         }
@@ -237,9 +228,8 @@ class StableHloQuantizationPattern : public RewritePattern {
         Type result_ele_type =
             result.getType().cast<TensorType>().getElementType();
         // If the user is the QuantizeOp, it must be the only user.
-        if (result.hasOneUse() &&
-            llvm::isa<QuantizeOpT>(*result.user_begin())) {
-          auto user = llvm::cast<QuantizeOpT>(*result.user_begin());
+        if (result.hasOneUse() && isa<QuantizeOpT>(*result.user_begin())) {
+          auto user = cast<QuantizeOpT>(*result.user_begin());
           outputs_replaced.insert(
               {user.getResult(), enumerated_result.index()});
           output_types.push_back(user.getType());
@@ -248,9 +238,8 @@ class StableHloQuantizationPattern : public RewritePattern {
           // D op in the pattern.
           outputs_replaced.insert({result, enumerated_result.index()});
           output_types.push_back(result.getType());
-        } else if (static_cast<const ConcreteT*>(this)
-                       ->AllowDynamicRangeQuantizedResult(*candidate_op,
-                                                          custom_map)) {
+        } else if (static_cast<const ConcreteT*>(this)->AllowHybridQuantization(
+                       *candidate_op)) {
           outputs_replaced.insert({result, enumerated_result.index()});
           output_types.push_back(result.getType());
         } else {
@@ -290,6 +279,10 @@ class StableHloQuantizationPattern : public RewritePattern {
 void PopulateFusedGemmStylePatterns(MLIRContext& ctx,
                                     RewritePatternSet& patterns,
                                     bool enable_per_channel_quantized_weight);
+
+// Populates pattern for hybrid quantization.
+void PopulateQuantizeHybridPatterns(MLIRContext& ctx,
+                                    RewritePatternSet& patterns);
 
 // Populates pattern for quantization of ops with regions such as
 // stablehlo.reduce_window op.
