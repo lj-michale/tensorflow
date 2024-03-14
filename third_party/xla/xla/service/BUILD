@@ -381,6 +381,7 @@ cc_library(
     deps = [
         ":collective_ops_utils",
         ":hlo_pass",
+        "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service/gpu:backend_configs_cc",
         "//xla/service/graphcycles",
@@ -393,10 +394,12 @@ xla_cc_test(
     name = "collective_permute_decomposer_test",
     srcs = ["collective_permute_decomposer_test.cc"],
     deps = [
+        ":collective_ops_utils",
         ":collective_permute_decomposer",
         ":hlo_parser",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/utils:hlo_matchers",
+        "//xla/service/gpu:backend_configs_cc",
         "//xla/tests:hlo_test_base",
         "@com_google_googletest//:gtest",
         "@local_tsl//tsl/platform:test_main",
@@ -849,6 +852,8 @@ xla_cc_test(
         "//xla/hlo/ir:hlo_reachability",
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/random",
+        "@local_tsl//tsl/platform:test_benchmark",
     ],
 )
 
@@ -6829,8 +6834,15 @@ cc_library(
         ":hlo_creation_utils",
         ":op_expander_pass",
         ":shape_inference",
+        "//xla:shape_util",
+        "//xla:util",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -6840,10 +6852,12 @@ xla_cc_test(
     deps = [
         ":operand_upcaster",
         "//xla:shape_util",
+        "//xla/hlo/ir:hlo",
         "//xla/hlo/utils:hlo_matchers",
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",
         "@com_google_absl//absl/strings",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -6854,7 +6868,11 @@ cc_library(
     deps = [
         ":op_expander_pass",
         ":shape_inference",
+        "//xla:shape_util",
+        "//xla:util",
         "//xla/hlo/ir:hlo",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 
@@ -6864,10 +6882,12 @@ xla_cc_test(
     deps = [
         ":result_caster",
         "//xla:shape_util",
+        "//xla/hlo/ir:hlo",
         "//xla/hlo/utils:hlo_matchers",
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",
         "@com_google_absl//absl/strings",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -7411,19 +7431,6 @@ xla_aot_compile_gpu(
 )
 
 xla_aot_compile_gpu(
-    name = "xla_aot_compile_test_gpu_executable_gemm",
-    autotune_results = "xla_aot_compile_test_autotune_results.prototxt",
-    gpu_target_config = "xla_aot_compile_test_gpu_target_config.prototxt",
-    module = "xla_aot_compile_test_gemm.mlir",
-)
-
-xla_aot_compile_gpu_runtime_autotuning(
-    name = "xla_aot_compile_test_gpu_executable_gemm_runtime_autotuning",
-    gpu_target_config = "xla_aot_compile_test_gpu_target_config.prototxt",
-    module = "xla_aot_compile_test_gemm.mlir",
-)
-
-xla_aot_compile_gpu(
     name = "xla_aot_compile_test_gpu_executable_convolution",
     autotune_results = "xla_aot_compile_test_autotune_results.prototxt",
     gpu_target_config = "xla_aot_compile_test_gpu_target_config.prototxt",
@@ -7490,8 +7497,6 @@ xla_cc_test(
         ":xla_aot_compile_test_gpu_executable",
         ":xla_aot_compile_test_gpu_executable_hlo",
         ":xla_aot_compile_test_gpu_executable_constant",
-        ":xla_aot_compile_test_gpu_executable_gemm",
-        ":xla_aot_compile_test_gpu_executable_gemm_runtime_autotuning",
         ":xla_aot_compile_test_gpu_executable_convolution",
         ":xla_aot_compile_test_gpu_executable_convolution_runtime_autotuning",
     ]),
@@ -7517,7 +7522,13 @@ xla_cc_test(
         "@local_tsl//tsl/platform:path",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
-    ]),
+    ]) + [
+        ":shaped_buffer",
+        "//xla:literal",
+        "//xla:shape_util",
+        "//xla/client:executable_build_options",
+        "@com_google_absl//absl/types:span",
+    ],
 )
 
 tf_proto_library(
