@@ -91,6 +91,7 @@ cc_library(
         "//tensorflow/compiler/mlir/quantization/common/quantization_lib",
         "//tensorflow/compiler/mlir/quantization/common/quantization_lib:quantization_config",
         "//tensorflow/core:protos_all_cc",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
@@ -186,6 +187,11 @@ tf_cc_test(
         "//tensorflow/lite/tools/optimize:testdata/weight_shared_between_convs.bin",
     ],
     tags = [
+        # TODO(b/327796566): re-enable after the bug is fixed
+        "manual",
+        "noasan",
+        "noguitar",
+        "notap",
         "tflite_not_portable_android",
         "tflite_not_portable_ios",
     ],

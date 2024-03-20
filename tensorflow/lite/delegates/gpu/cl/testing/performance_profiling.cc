@@ -22,10 +22,13 @@ limitations under the License.
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/time/time.h"
+#include "third_party/opencl_headers/CL/cl.h"
 #include "third_party/opencl_headers/CL/cl_ext.h"
+#include "third_party/opencl_headers/CL/cl_platform.h"
 #include "tensorflow/lite/core/kernels/register.h"
 #include "tensorflow/lite/delegates/gpu/cl/environment.h"
 #include "tensorflow/lite/delegates/gpu/cl/inference_context.h"
+#include "tensorflow/lite/delegates/gpu/cl/opencl_wrapper.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
 #include "tensorflow/lite/delegates/gpu/common/model_builder.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
@@ -241,7 +244,7 @@ absl::Status RunCommandBufferSample(int num_tests, int num_runs_per_test,
   }
 
   cl_command_queue command_queue = env->queue()->queue();
-  cl_int errcode_ret;
+  cl_int errcode_ret{CL_SUCCESS};
   std::vector<cl_command_buffer_khr> cbs(num_runs_per_test);
   for (auto& cb : cbs) {
     cb = clCreateCommandBufferKHR(1, &command_queue, nullptr, &errcode_ret);
