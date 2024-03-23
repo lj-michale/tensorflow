@@ -37,8 +37,6 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-class IndexingContext;
-
 // Interval represents a closed interval [lower_bound, upper_bound].
 struct Interval {
   std::string ToString() const;
@@ -167,15 +165,18 @@ H AbslHashValue(H h, const RangeVar& range_var) {
 // RTSymbol variable represents a runtime symbol, e.g. a dynamic offset in
 // HLO dynamic-update-slice op. RTSymbol variables correspond to the back
 // portion of the symbols in `affine_map_`.
-using RTVarID = int64_t;
 struct RTVar {
-  RTVarID id;
+  Interval feasible_values;
+  const HloInstruction* hlo;
+  mlir::AffineMap map;
 };
 bool operator==(const RTVar& lhs, const RTVar& rhs);
 
 template <typename H>
 H AbslHashValue(H h, const RTVar& rt_var) {
-  return H::combine(std::move(h), rt_var.id);
+  llvm::hash_code map_hash = llvm::hash_combine(rt_var.map);
+  return H::combine(std::move(h), rt_var.feasible_values, rt_var.hlo,
+                    static_cast<size_t>(map_hash));
 }
 
 std::vector<DimVar> DimVarsFromTensorSizes(
@@ -212,12 +213,10 @@ std::vector<RangeVar> RangeVarsFromTensorSizes(
 class IndexingMap {
  public:
   IndexingMap(
-      IndexingContext* indexing_context, mlir::AffineMap affine_map,
-      std::vector<DimVar> dimensions, std::vector<RangeVar> range_vars,
-      std::vector<RTVar> rt_vars,
+      mlir::AffineMap affine_map, std::vector<DimVar> dimensions,
+      std::vector<RangeVar> range_vars, std::vector<RTVar> rt_vars,
       absl::Span<std::pair<mlir::AffineExpr, Interval>> constraints = {})
-      : indexing_context_(indexing_context),
-        affine_map_(affine_map),
+      : affine_map_(affine_map),
         dim_vars_(std::move(dimensions)),
         range_vars_(std::move(range_vars)),
         rt_vars_(std::move(rt_vars)) {
@@ -225,12 +224,10 @@ class IndexingMap {
       AddConstraint(expr, range);
     }
   }
-  IndexingMap(IndexingContext* indexing_context, mlir::AffineMap affine_map,
-              std::vector<DimVar> dimensions, std::vector<RangeVar> range_vars,
-              std::vector<RTVar> rt_vars,
+  IndexingMap(mlir::AffineMap affine_map, std::vector<DimVar> dimensions,
+              std::vector<RangeVar> range_vars, std::vector<RTVar> rt_vars,
               const llvm::DenseMap<mlir::AffineExpr, Interval>& constraints)
-      : indexing_context_(indexing_context),
-        affine_map_(affine_map),
+      : affine_map_(affine_map),
         dim_vars_(std::move(dimensions)),
         range_vars_(std::move(range_vars)),
         rt_vars_(std::move(rt_vars)),
@@ -239,8 +236,7 @@ class IndexingMap {
   static IndexingMap GetUndefined() { return IndexingMap(); }
 
   static IndexingMap FromTensorSizes(
-      IndexingContext* indexing_context, mlir::AffineMap affine_map,
-      absl::Span<const int64_t> dim_upper_bounds,
+      mlir::AffineMap affine_map, absl::Span<const int64_t> dim_upper_bounds,
       absl::Span<const int64_t> symbol_upper_bounds);
 
   std::string ToString(
@@ -253,9 +249,6 @@ class IndexingMap {
 
   // Return MLIRContext.
   mlir::MLIRContext* GetMLIRContext() const;
-
-  // Return IndexingContext.
-  IndexingContext* GetIndexingContext() const;
 
   // Returns the affine map.
   mlir::AffineMap GetAffineMap() const { return affine_map_; }
@@ -333,7 +326,9 @@ class IndexingMap {
   // Returns true if simplification was performed.
   bool SimplifyConstraintRanges();
 
-  IndexingContext* indexing_context_ = nullptr;
+  // Merges "mod" constraints for the same AffineExpr.
+  void MergeModConstraints();
+
   mlir::AffineMap affine_map_;
   std::vector<DimVar> dim_vars_;
   std::vector<RangeVar> range_vars_;
@@ -360,15 +355,6 @@ H AbslHashValue(H h, const IndexingMap& indexing_map) {
                     indexing_map.GetRTVars(),
                     indexing_map.GetConstraintsCount());
 }
-
-struct RTVarData {
-  std::string ToString() const;
-  void Print(std::ostream& out) const;
-
-  Interval feasible_values;
-  const HloInstruction* hlo;
-  IndexingMap indexing_map;
-};
 
 }  // namespace gpu
 }  // namespace xla

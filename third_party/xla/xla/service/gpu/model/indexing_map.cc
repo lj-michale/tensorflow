@@ -35,7 +35,6 @@ limitations under the License.
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "xla/service/gpu/model/affine_map_printer.h"
-#include "xla/service/gpu/model/indexing_context.h"
 #include "tsl/platform/logging.h"  // IWYU pragma: keep
 
 namespace xla {
@@ -594,7 +593,10 @@ bool operator==(const RangeVar& lhs, const RangeVar& rhs) {
   return lhs.range == rhs.range;
 }
 
-bool operator==(const RTVar& lhs, const RTVar& rhs) { return lhs.id == rhs.id; }
+bool operator==(const RTVar& lhs, const RTVar& rhs) {
+  return lhs.feasible_values == rhs.feasible_values && lhs.hlo == rhs.hlo &&
+         lhs.map == rhs.map;
+}
 
 std::vector<DimVar> DimVarsFromTensorSizes(
     absl::Span<const int64_t> tensor_sizes) {
@@ -617,20 +619,11 @@ std::vector<RangeVar> RangeVarsFromTensorSizes(
 }
 
 IndexingMap IndexingMap::FromTensorSizes(
-    IndexingContext* indexing_context, AffineMap affine_map,
-    absl::Span<const int64_t> dim_upper_bounds,
+    AffineMap affine_map, absl::Span<const int64_t> dim_upper_bounds,
     absl::Span<const int64_t> symbol_upper_bounds) {
-  return IndexingMap{
-      indexing_context, affine_map, DimVarsFromTensorSizes(dim_upper_bounds),
-      RangeVarsFromTensorSizes(symbol_upper_bounds), /*rt_vars=*/{}};
-}
-
-mlir::MLIRContext* IndexingMap::GetMLIRContext() const {
-  return indexing_context_->GetMLIRContext();
-}
-
-IndexingContext* IndexingMap::GetIndexingContext() const {
-  return indexing_context_;
+  return IndexingMap{affine_map, DimVarsFromTensorSizes(dim_upper_bounds),
+                     RangeVarsFromTensorSizes(symbol_upper_bounds),
+                     /*rt_vars=*/{}};
 }
 
 const Interval& IndexingMap::GetDimensionBound(int64_t dim_id) const {
@@ -656,9 +649,7 @@ const Interval& IndexingMap::GetSymbolBound(int64_t symbol_id) const {
   int64_t range_var_count = GetRangeVarsCount();
   return symbol_id < range_var_count
              ? range_vars_[symbol_id].range
-             : indexing_context_
-                   ->GetRTVarData(rt_vars_[symbol_id - range_var_count].id)
-                   .feasible_values;
+             : rt_vars_[symbol_id - range_var_count].feasible_values;
 }
 
 Interval& IndexingMap::GetMutableSymbolBound(int64_t symbol_id) {
@@ -667,9 +658,7 @@ Interval& IndexingMap::GetMutableSymbolBound(int64_t symbol_id) {
   int64_t range_var_count = GetRangeVarsCount();
   return symbol_id < range_var_count
              ? range_vars_[symbol_id].range
-             : indexing_context_
-                   ->GetRTVarData(rt_vars_[symbol_id - range_var_count].id)
-                   .feasible_values;
+             : rt_vars_[symbol_id - range_var_count].feasible_values;
 }
 
 std::vector<Interval> IndexingMap::GetSymbolBounds() const {
@@ -679,8 +668,7 @@ std::vector<Interval> IndexingMap::GetSymbolBounds() const {
     bounds.push_back(range_var.range);
   }
   for (const auto& rt_var : rt_vars_) {
-    bounds.push_back(
-        indexing_context_->GetRTVarData(rt_var.id).feasible_values);
+    bounds.push_back(rt_var.feasible_values);
   }
   return bounds;
 }
@@ -835,23 +823,25 @@ void IndexingMap::Print(std::ostream& out,
                         const AffineMapPrinter& printer) const {
   printer.Print(out, affine_map_);
   out << "\ndomain:\n";
-  for (const auto& [index, range] : llvm::enumerate(dim_vars_)) {
+  for (const auto& [index, dim_var] : llvm::enumerate(dim_vars_)) {
     out << printer.GetDimensionName(static_cast<int64_t>(index)) << " in ";
-    dim_vars_.at(index).bounds.Print(out);
+    dim_var.bounds.Print(out);
+    out << '\n';
+  }
+  for (const auto& [index, range_var] : llvm::enumerate(range_vars_)) {
+    out << printer.GetSymbolName(static_cast<int64_t>(index)) << " in ";
+    range_var.range.Print(out);
     out << '\n';
   }
   int64_t range_vars_count = GetRangeVarsCount();
-  for (const auto& [index, range] : llvm::enumerate(range_vars_)) {
-    out << printer.GetSymbolName(static_cast<int64_t>(index)) << " in ";
-    range_vars_.at(index).range.Print(out);
-    out << '\n';
-  }
-  for (const auto& [index, range] : llvm::enumerate(rt_vars_)) {
-    auto id = rt_vars_.at(index).id;
-    const RTVarData& rt_var_data = indexing_context_->GetRTVarData(id);
+  for (const auto& [index, rt_var] : llvm::enumerate(rt_vars_)) {
     out << printer.GetSymbolName(static_cast<int64_t>(range_vars_count + index))
-        << " id: " << id;
-    rt_var_data.Print(out);
+        << " in ";
+    rt_var.feasible_values.Print(out);
+    out << "\n  hlo: "
+        << (rt_var.hlo == nullptr ? "NULL" : rt_var.hlo->ToString()) << "\n  ";
+    printer.Print(out, rt_var.map);
+    out << '\n';
   }
   std::vector<std::string> expr_range_strings;
   expr_range_strings.reserve(constraints_.size());
@@ -866,6 +856,10 @@ void IndexingMap::Print(std::ostream& out,
   for (const auto& expr_range_string : expr_range_strings) {
     out << expr_range_string << '\n';
   }
+}
+
+MLIRContext* IndexingMap::GetMLIRContext() const {
+  return IsUndefined() ? nullptr : affine_map_.getContext();
 }
 
 std::ostream& operator<<(std::ostream& out, const IndexingMap& indexing_map) {
@@ -908,6 +902,8 @@ bool IndexingMap::Simplify() {
     constraints_were_simplified = true;
     if (!SimplifyConstraintRanges()) break;
   }
+  // Simplify dependent constraints.
+  MergeModConstraints();
   // Simplify affine_map using the optimized ranges.
   // Potentially, we can be smarter about recreating the range_evaluator.
   RangeEvaluator range_evaluator(GetDimensionBounds(), GetSymbolBounds(),
@@ -1091,6 +1087,67 @@ void IndexingMap::RemoveUnusedSymbols() {
   }
 }
 
+void IndexingMap::MergeModConstraints() {
+  RangeEvaluator range_evaluator(GetDimensionBounds(), GetSymbolBounds(),
+                                 GetMLIRContext());
+
+  // Group constraints by LHS.
+  llvm::DenseMap<AffineExpr, llvm::SmallVector<AffineBinaryOpExpr, 2>>
+      grouped_constraints;
+  for (const auto& [expr, _] : constraints_) {
+    if (expr.getKind() != AffineExprKind::Mod) continue;
+    auto binop = mlir::cast<AffineBinaryOpExpr>(expr);
+    grouped_constraints[binop.getLHS()].push_back(binop);
+  }
+
+  // Merge constraints of type MOD.
+  // (X mod 3 == 0) & (X mod 2 == 0) => (X mod 6 == 0)
+  for (const auto& [lhs, binops] : grouped_constraints) {
+    llvm::DenseMap<int64_t, llvm::SmallVector<AffineBinaryOpExpr, 2>>
+        mod_groups;
+    for (const auto& binop : binops) {
+      Interval mod_result = constraints_[binop];
+      if (mod_result.IsPoint()) {
+        mod_groups[mod_result.lower].push_back(binop);
+      }
+    }
+    if (mod_groups.empty()) continue;
+
+    // Update domain for dimensions and symbols only.
+    Interval* update = nullptr;
+    if (lhs.getKind() == AffineExprKind::DimId) {
+      update = &GetMutableDimensionBound(
+          mlir::cast<AffineDimExpr>(lhs).getPosition());
+    } else if (lhs.getKind() == AffineExprKind::SymbolId) {
+      update = &GetMutableSymbolBound(
+          mlir::cast<AffineSymbolExpr>(lhs).getPosition());
+    }
+    for (const auto& [res, ops] : mod_groups) {
+      // Calculate least common multiple for the divisors.
+      int64_t div = 1;
+      for (const auto& op : ops) {
+        int64_t rhs_value =
+            range_evaluator.ComputeExpressionRange(op.getRHS()).lower;
+        div = std::lcm(div, rhs_value);
+      }
+      // Replace multiple constraints with a merged one.
+      if (ops.size() > 1) {
+        for (const auto& op : ops) {
+          constraints_.erase(op);
+        }
+        constraints_[lhs % div] = Interval{res, res};
+      }
+      // Update dimension and symbol bounds.
+      if (update != nullptr) {
+        int64_t l = (update->lower / div) * div + res;
+        update->lower = l >= update->lower ? l : l + div;
+        int64_t h = (update->upper / div) * div + res;
+        update->upper = h <= update->upper ? h : h - div;
+      }
+    }
+  }
+}
+
 IndexingMap ComposeIndexingMaps(const IndexingMap& first,
                                 const IndexingMap& second) {
   if (second.IsUndefined() || first.IsUndefined()) {
@@ -1114,9 +1171,7 @@ IndexingMap ComposeIndexingMaps(const IndexingMap& first,
     combined_symbol_ranges.push_back(symbol_range);
   }
 
-  IndexingContext* indexing_context = first.GetIndexingContext();
-  IndexingMap composed_indexing_map(indexing_context, composed_map,
-                                    first.GetDimVars(),
+  IndexingMap composed_indexing_map(composed_map, first.GetDimVars(),
                                     std::move(combined_symbol_ranges),
                                     /*rt_vars=*/{});
   // Add constraints that are already present in the producer_map. We have to
@@ -1156,18 +1211,6 @@ IndexingMap ComposeIndexingMaps(const IndexingMap& first,
         producer_dim_range);
   }
   return composed_indexing_map;
-}
-
-std::string RTVarData::ToString() const {
-  std::stringstream ss;
-  Print(ss);
-  return ss.str();
-}
-
-void RTVarData::Print(std::ostream& out) const {
-  out << " in " << feasible_values
-      << "\nhlo: " << (hlo == nullptr ? "NULL" : hlo->ToString()) << '\n';
-  indexing_map.Print(out, AffineMapPrinter());
 }
 
 }  // namespace gpu

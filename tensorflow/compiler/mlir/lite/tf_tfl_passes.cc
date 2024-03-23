@@ -150,14 +150,8 @@ void AddPreQuantizationStableHloToTfPasses(
   // specific features like mhlo::ErfOp which aren't supported
   // in StableHLO, but we have CHLO->StableHLO decompositions to legalize.
   pass_manager.addPass(mlir::mhlo::createHloLegalizeToStablehloPass());
-  pass_manager.addPass(
-      mlir::stablehlo::experimental::createChloRecomposeOpsPass());
-  pass_manager.addNestedPass<mlir::func::FuncOp>(
-      mlir::mhlo::createChloLegalizeToHloBasisOpsPass());
-  pass_manager.addNestedPass<mlir::func::FuncOp>(
-      mlir::mhlo::createChloLegalizeToHloPass());
-  pass_manager.addNestedPass<mlir::func::FuncOp>(
-      mlir::mhlo::createShapeLegalizeToHloPass());
+  mlir::stablehlo::experimental::createChloLegalizeToStablehloPipeline(
+      pass_manager);
   pass_manager.addPass(mlir::mhlo::createHloLegalizeToStablehloPass());
 
   // The following two passes find specific uniform quantization patterns in
@@ -258,6 +252,13 @@ void AddPostQuantizationStableHloToTfPasses(
 
   // Legalize all remaining mhlo ops to stableHLO
   pass_manager.addPass(mlir::mhlo::createHloLegalizeToStablehloPass());
+
+  // Translate "stablehlo.custom_call @stablehlo.composite" to
+  // "stablehlo.composite"
+  // TODO: b/330741524 - clean this up when "stablehlo.composite" is emitted
+  // directly.
+  pass_manager.addPass(
+      mlir::odml::createLegalizeStablehloCustomCallToCompositePass());
 }
 
 // This is the early part of the conversion in isolation. This enables a caller

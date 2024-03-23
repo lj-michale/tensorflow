@@ -418,14 +418,8 @@ xla_cc_test(
 
 cc_library(
     name = "indexing_map",
-    srcs = [
-        "indexing_context.cc",
-        "indexing_map.cc",
-    ],
-    hdrs = [
-        "indexing_context.h",
-        "indexing_map.h",
-    ],
+    srcs = ["indexing_map.cc"],
+    hdrs = ["indexing_map.h"],
     deps = [
         ":affine_map_printer",
         "//xla/hlo/ir:hlo",
@@ -487,6 +481,7 @@ cc_library(
         "//xla:util",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
+        "//xla/service:gather_simplifier",
         "//xla/service/gpu:hlo_traversal",
         "//xla/service/gpu:matmul_utils",
         "//xla/service/gpu/fusions:tiling_util",
@@ -507,6 +502,7 @@ xla_cc_test(
     srcs = ["indexing_analysis_test.cc"],
     deps = [
         ":indexing_analysis",
+        ":indexing_map",
         ":indexing_test_utils",
         "//xla/hlo/ir:hlo",
         "//xla/service/gpu:hlo_traversal",
@@ -527,13 +523,13 @@ cc_library(
     deps = [
         ":affine_map_printer",
         ":indexing_map",
-        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
-        "@local_tsl//tsl/platform:status",
     ],
 )
 
@@ -568,6 +564,7 @@ cc_library(
         "//xla:status",
         "//xla/hlo/ir:hlo",
         "//xla/service:instruction_fusion",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:check",

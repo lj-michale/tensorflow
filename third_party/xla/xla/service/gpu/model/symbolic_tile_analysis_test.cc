@@ -15,10 +15,8 @@ limitations under the License.
 
 #include "xla/service/gpu/model/symbolic_tile_analysis.h"
 
-#include <cstdint>
 #include <memory>
 #include <variant>
-#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -26,7 +24,6 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/service/gpu/model/indexing_context.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/tests/verified_hlo_module.h"
 #include "tsl/platform/statusor.h"
@@ -36,21 +33,6 @@ namespace gpu {
 namespace {
 
 using ::testing::ElementsAre;
-
-void SetTileParametersWithDefaultOffsetsAndStrides(
-    absl::Span<int64_t const> sizes, SymbolicTileAnalysis& analysis) {
-  std::vector<int64_t> parameters;
-  parameters.reserve(3 * sizes.size());
-
-  for (int64_t size : sizes) {
-    // Untiled dims have offset = 0 and stride = 1.
-    parameters.push_back(0);
-    parameters.push_back(size);
-    parameters.push_back(1);
-  }
-  analysis.SetTileParameters(parameters);
-}
-
 using SymbolicTileAnalysisTest = HloTestBase;
 
 TEST_F(SymbolicTileAnalysisTest, SimpleNormalizationDiamondIsSupported) {
@@ -71,17 +53,16 @@ ENTRY main {
 })"));
 
   mlir::MLIRContext mlir_ctx;
-  IndexingContext ctx(&mlir_ctx);
 
   SymbolicTileAnalysisOrError analysis_or_error =
       SymbolicTileAnalysis::AnalyzeComputation(*module->entry_computation(),
-                                               &ctx);
+                                               &mlir_ctx);
 
-  EXPECT_TRUE(std::holds_alternative<SymbolicTileAnalysis>(analysis_or_error));
+  ASSERT_TRUE(std::holds_alternative<SymbolicTileAnalysis>(analysis_or_error));
   SymbolicTileAnalysis analysis =
       std::get<SymbolicTileAnalysis>(analysis_or_error);
 
-  SetTileParametersWithDefaultOffsetsAndStrides(/*sizes=*/{1, 10}, analysis);
+  analysis.SetTileSizes(/*sizes=*/{1, 10});
 
   const HloInstruction* p0 =
       module->entry_computation()->parameter_instruction(0);
@@ -109,10 +90,9 @@ ENTRY main {
 })"));
 
   mlir::MLIRContext mlir_ctx;
-  IndexingContext ctx(&mlir_ctx);
   SymbolicTileAnalysisOrError analysis_or_error =
       SymbolicTileAnalysis::AnalyzeComputation(*module->entry_computation(),
-                                               &ctx);
+                                               &mlir_ctx);
   EXPECT_FALSE(std::holds_alternative<SymbolicTileAnalysis>(analysis_or_error));
 }
 
@@ -125,10 +105,9 @@ ENTRY main {
 })"));
 
   mlir::MLIRContext mlir_ctx;
-  IndexingContext ctx(&mlir_ctx);
   SymbolicTileAnalysisOrError analysis_or_error =
       SymbolicTileAnalysis::AnalyzeComputation(*module->entry_computation(),
-                                               &ctx);
+                                               &mlir_ctx);
   EXPECT_FALSE(std::holds_alternative<SymbolicTileAnalysis>(analysis_or_error));
 }
 
@@ -141,10 +120,9 @@ ENTRY main {
 })"));
 
   mlir::MLIRContext mlir_ctx;
-  IndexingContext ctx(&mlir_ctx);
   SymbolicTileAnalysisOrError analysis_or_error =
       SymbolicTileAnalysis::AnalyzeComputation(*module->entry_computation(),
-                                               &ctx);
+                                               &mlir_ctx);
   EXPECT_FALSE(std::holds_alternative<SymbolicTileAnalysis>(analysis_or_error));
 }
 
@@ -158,10 +136,9 @@ ENTRY main {
 })"));
 
   mlir::MLIRContext mlir_ctx;
-  IndexingContext ctx(&mlir_ctx);
   SymbolicTileAnalysisOrError analysis_or_error =
       SymbolicTileAnalysis::AnalyzeComputation(*module->entry_computation(),
-                                               &ctx);
+                                               &mlir_ctx);
   EXPECT_FALSE(std::holds_alternative<SymbolicTileAnalysis>(analysis_or_error));
 }
 
