@@ -33,6 +33,7 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/mem.h"
 #include "tensorflow/core/platform/statusor.h"
+#include "tsl/platform/protobuf.h"
 
 namespace tensorflow {
 namespace data {
@@ -1325,8 +1326,8 @@ class AsyncKnownRatio : public AsyncRatio {
       parameters.push_back(pair.second);
     }
     return std::make_shared<AsyncKnownRatio>(
-        Args{id_, name_, std::move(output)}, Ratio(), MemoryRatio(),
-        parameters);
+        Args{id_, name_, std::move(output)}, Ratio(), MemoryRatio(), parameters,
+        is_legacy_prefetch_autotuned_);
   }
 
   Status ToProto(ModelProto::Node* node_proto) const override {
@@ -2265,7 +2266,7 @@ Model::Model(std::optional<std::string> dataset_name)
               if (dataset_name_.has_value()) {
                 model_proto.set_dataset_name(dataset_name_.value());
               }
-              return model_proto.DebugString();
+              return tsl::LegacyUnredactedDebugString(model_proto);
             }
             LOG(WARNING) << s.message();
           }

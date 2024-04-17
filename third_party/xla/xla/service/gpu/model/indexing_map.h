@@ -31,6 +31,7 @@ limitations under the License.
 #include "mlir/IR/AffineExpr.h"  // from @llvm-project
 #include "mlir/IR/AffineMap.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/gpu/model/affine_map_printer.h"
 
@@ -43,6 +44,7 @@ struct Interval {
   void Print(std::ostream& out) const;
 
   bool IsPoint() const { return lower == upper; }
+  int64_t NumElements() const { return upper - lower + 1; }
 
   bool Contains(int64_t value) const {
     return value >= lower && value <= upper;
@@ -244,8 +246,13 @@ class IndexingMap {
 
   void Print(std::ostream& out, const AffineMapPrinter& printer) const;
 
+  // TODO(hebecker): Rearrange code structure so that we can call
+  // `ComputeInputToOutputIndexing` from `:indexing_analysis` directly.
+  using IndexingMapProvider = llvm::function_ref<IndexingMap(
+      const HloInstruction*, int64_t /*operand id*/, mlir::MLIRContext*)>;
+
   // Returns true if the map was simplified.
-  bool Simplify();
+  bool Simplify(IndexingMapProvider indexing_map_provider);
 
   // Return MLIRContext.
   mlir::MLIRContext* GetMLIRContext() const;
@@ -315,6 +322,10 @@ class IndexingMap {
   // Removes unused symbols from the `affine_map_` and constraints.
   void RemoveUnusedSymbols();
 
+  // Rescales all symbols that are sufficiently constrained through `s? mod x =
+  // [N, N]` constraints. Returns true if a rescale took place, otherwise false.
+  bool RescaleSymbols();
+
  private:
   IndexingMap() = default;
 
@@ -328,6 +339,10 @@ class IndexingMap {
 
   // Merges "mod" constraints for the same AffineExpr.
   void MergeModConstraints();
+
+  // Replace RTVars that yield constants by indexing expressions.
+  // Returns true if a replacement was performed, otherwise false.
+  bool ReplaceConstantRTVars(IndexingMapProvider indexing_map_provider);
 
   mlir::AffineMap affine_map_;
   std::vector<DimVar> dim_vars_;
@@ -355,6 +370,9 @@ H AbslHashValue(H h, const IndexingMap& indexing_map) {
                     indexing_map.GetRTVars(),
                     indexing_map.GetConstraintsCount());
 }
+
+int64_t FloorDiv(int64_t dividend, int64_t divisor);
+int64_t CeilDiv(int64_t dividend, int64_t divisor);
 
 }  // namespace gpu
 }  // namespace xla

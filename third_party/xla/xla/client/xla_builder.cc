@@ -62,7 +62,6 @@ limitations under the License.
 #include "xla/sharding_op_util.h"
 #include "xla/status.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/util.h"
 #include "xla/window_util.h"
 #include "xla/xla_data.pb.h"
@@ -110,6 +109,18 @@ bool InstrIsSetBound(const HloInstructionProto* instr_proto) {
     return true;
   }
   return false;
+}
+
+Status NormalizeAndAssignSharing(HloInstructionProto* instr,
+                                 const OpSharding& op_sharding) {
+  // Normalize tuple sharding and fail the call if the sharding is invalid.
+  Shape shape(instr->shape());
+  TF_ASSIGN_OR_RETURN(HloSharding sharding,
+                      HloSharding::FromProto(op_sharding));
+  sharding = sharding.NormalizeTupleSharding(shape);
+  TF_RETURN_IF_ERROR(sharding.Validate(shape));
+  *instr->mutable_sharding() = sharding.ToProto();
+  return OkStatus();
 }
 
 }  // namespace
@@ -476,6 +487,15 @@ absl::StatusOr<std::vector<Shape>> XlaBuilder::GetOperandShapes(
   return operand_shapes;
 }
 
+absl::StatusOr<std::optional<OpSharding>> XlaBuilder::GetOpSharding(
+    XlaOp op) const {
+  TF_ASSIGN_OR_RETURN(auto instr_proto, LookUpInstruction(op));
+  if (instr_proto->has_sharding()) {
+    return instr_proto->sharding();
+  }
+  return std::nullopt;
+}
+
 std::string XlaBuilder::OpToString(XlaOp op) const {
   std::string s;
   ToStringHelper(&s, /*ident=*/0, op.handle());
@@ -681,6 +701,16 @@ Status XlaBuilder::SetInstructionFrontendAttribute(const XlaOp op,
   auto* frontend_attributes = instr_proto->mutable_frontend_attributes();
   (*frontend_attributes->mutable_map())[attribute] = std::move(value);
   return OkStatus();
+}
+
+Status XlaBuilder::SetInstructionSharding(
+    XlaOp op, const std::optional<OpSharding>& sharding) {
+  TF_ASSIGN_OR_RETURN(auto instr_proto, LookUpMutableInstruction(op));
+  if (!sharding.has_value()) {
+    instr_proto->clear_sharding();
+    return OkStatus();
+  }
+  return NormalizeAndAssignSharing(instr_proto, sharding.value());
 }
 
 XlaComputation XlaBuilder::BuildAndNoteError() {
@@ -1334,9 +1364,14 @@ XlaOp XlaBuilder::ConstantLiteral(const LiteralSlice& literal) {
       HloInstructionProto instr;
       *instr.mutable_shape() = scalar.shape().ToProto();
       *instr.mutable_literal() = scalar.ToProto();
-      TF_ASSIGN_OR_RETURN(
-          XlaOp scalar_op,
-          AddInstruction(std::move(instr), HloOpcode::kConstant));
+      XlaOp scalar_op;
+      {
+        // If the builder has a sharding, it should only be added to the
+        // broadcast (and not the scalar constant).
+        XlaScopedShardingAssignment scoped_sharding(this, std::nullopt);
+        TF_ASSIGN_OR_RETURN(
+            scalar_op, AddInstruction(std::move(instr), HloOpcode::kConstant));
+      }
       return Broadcast(scalar_op, literal.shape().dimensions());
     } else {
       HloInstructionProto instr;
@@ -1433,8 +1468,8 @@ XlaOp XlaBuilder::Broadcast(XlaOp operand,
 }
 
 XlaOp XlaBuilder::BroadcastInDim(
-    XlaOp operand, const absl::Span<const int64_t> out_dim_size,
-    const absl::Span<const int64_t> broadcast_dimensions) {
+    XlaOp operand, absl::Span<const int64_t> out_dim_size,
+    absl::Span<const int64_t> broadcast_dimensions) {
   return ReportErrorOrReturn([&]() -> absl::StatusOr<XlaOp> {
     TF_ASSIGN_OR_RETURN(const Shape* operand_shape, GetShapePtr(operand));
     // Output shape, in the case of degenerate broadcast, the out_dim_size is
@@ -1941,8 +1976,9 @@ Status XlaBuilder::VerifyConvolution(
   }
   int num_spatial_dims = num_dims - 2;
 
-  const auto check_spatial_dimensions = [&](absl::string_view field_name,
-                                            absl::Span<const int64_t> numbers) {
+  const auto check_spatial_dimensions =
+      [&](absl::string_view field_name,
+          absl::Span<const int64_t> numbers) -> absl::Status {
     if (numbers.size() != num_spatial_dims) {
       return InvalidArgument("Expected %d elements for %s, but got %d.",
                              num_spatial_dims, field_name, numbers.size());
@@ -4559,13 +4595,7 @@ absl::StatusOr<XlaOp> XlaBuilder::AddInstruction(
     *instr.mutable_metadata() = metadata_;
   }
   if (sharding_) {
-    // Normalize tuple sharding and fail the call if the sharding is not valid.
-    Shape shape(instr.shape());
-    TF_ASSIGN_OR_RETURN(HloSharding sharding,
-                        HloSharding::FromProto(*sharding_));
-    sharding = sharding.NormalizeTupleSharding(shape);
-    TF_RETURN_IF_ERROR(sharding.Validate(shape));
-    *instr.mutable_sharding() = sharding.ToProto();
+    TF_RETURN_IF_ERROR(NormalizeAndAssignSharing(&instr, *sharding_));
   }
   *instr.mutable_frontend_attributes() = frontend_attributes_;
 
@@ -4690,8 +4720,8 @@ XlaOp Broadcast(const XlaOp operand,
 }
 
 XlaOp BroadcastInDim(const XlaOp operand,
-                     const absl::Span<const int64_t> out_dim_size,
-                     const absl::Span<const int64_t> broadcast_dimensions) {
+                     absl::Span<const int64_t> out_dim_size,
+                     absl::Span<const int64_t> broadcast_dimensions) {
   return operand.builder()->BroadcastInDim(operand, out_dim_size,
                                            broadcast_dimensions);
 }
@@ -5313,7 +5343,7 @@ XlaOp AllGather(const XlaOp operand, int64_t all_gather_dimension,
                                       layout, use_global_device_ids);
 }
 
-XlaOp AllGatherTuple(const absl::Span<const XlaOp> operands,
+XlaOp AllGatherTuple(absl::Span<const XlaOp> operands,
                      int64_t all_gather_dimension, int64_t shard_count,
                      absl::Span<const ReplicaGroup> replica_groups,
                      const std::optional<ChannelHandle>& channel_id,
@@ -5340,7 +5370,7 @@ XlaOp AllReduce(const XlaOp operand, const XlaComputation& computation,
                                       use_global_device_ids);
 }
 
-XlaOp AllReduceTuple(const absl::Span<const XlaOp> operands,
+XlaOp AllReduceTuple(absl::Span<const XlaOp> operands,
                      const XlaComputation& computation,
                      absl::Span<const ReplicaGroup> replica_groups,
                      const std::optional<ChannelHandle>& channel_id,
