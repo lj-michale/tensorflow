@@ -183,6 +183,7 @@ xla_test(
         "//xla/service/gpu:gpu_executable",
         "//xla/service/gpu:variant_visitor",
         "//xla/stream_executor:device_description",
+        "//xla/stream_executor:device_memory_allocator",
         "//xla/tests:filecheck",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/functional:any_invocable",
@@ -920,6 +921,26 @@ xla_test(
         "//xla/tests:hlo_test_base",
         "@local_tsl//tsl/platform:tensor_float_32_utils",
         "@local_tsl//tsl/platform:test_main",
+    ],
+)
+
+xla_test(
+    name = "gpu_sparse_dot_test",
+    srcs = ["gpu_sparse_dot_test.cc"],
+    backends = [
+        "gpu_a100",
+        # TODO(b/335197598): re-enable Hopper test when the blocker is resolved (PTX version)
+        # "gpu_h100",
+    ],
+    deps = [
+        ":gpu_codegen_test",
+        "//third_party/half:includes",
+        "//xla:literal",
+        "//xla:literal_util",
+        "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest",
     ],
 )
 
