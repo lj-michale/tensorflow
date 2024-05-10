@@ -85,8 +85,7 @@ static hipDeviceptr_t AsROCmDevicePtr(DeviceMemoryBase* gpu_mem) {
 }
 
 static GpuContext* GetGpuContext(Stream* stream) {
-  return static_cast<GpuExecutor*>(stream->parent()->implementation())
-      ->gpu_context();
+  return static_cast<GpuExecutor*>(stream->parent())->gpu_context();
 }
 
 GpuContext* ExtractGpuContext(GpuExecutor* rocm_exec) {
@@ -816,30 +815,35 @@ bool GpuExecutor::DeviceMemoryUsage(int64_t* free, int64_t* total) const {
   return GpuDriver::GetDeviceMemoryInfo(context_, free, total);
 }
 
-bool GpuExecutor::GetSymbol(const string& symbol_name,
-                            ModuleHandle module_handle, void** mem,
-                            size_t* bytes) {
+absl::StatusOr<DeviceMemoryBase> GpuExecutor::GetSymbol(
+    const std::string& symbol_name, ModuleHandle module_handle) {
+  void* mem = nullptr;
+  size_t bytes = 0;
+
   absl::MutexLock lock{&in_memory_modules_mu_};
   if (static_cast<bool>(module_handle)) {
     auto it = gpu_binary_to_module_.find(module_handle.id());
     CHECK(it != gpu_binary_to_module_.end());
     if (GpuDriver::GetModuleSymbol(
             context_, it->second.first, symbol_name.c_str(),
-            reinterpret_cast<hipDeviceptr_t*>(mem), bytes)) {
-      return true;
+            reinterpret_cast<hipDeviceptr_t*>(&mem), &bytes)) {
+      return DeviceMemoryBase(mem, bytes);
     }
   }
 
   for (auto& it : gpu_binary_to_module_) {
     if (GpuDriver::GetModuleSymbol(
             context_, it.second.first, symbol_name.c_str(),
-            reinterpret_cast<hipDeviceptr_t*>(mem), bytes)) {
-      return true;
+            reinterpret_cast<hipDeviceptr_t*>(&mem), &bytes)) {
+      return DeviceMemoryBase(mem, bytes);
     }
   }
 
   LOG(INFO) << "Falied to find symbol in any modules: " << symbol_name;
-  return false;
+  return absl::NotFoundError(
+      absl::StrCat("Check if module containing symbol ", symbol_name,
+                   " is loaded (module_handle = ",
+                   reinterpret_cast<uintptr_t>(module_handle.id()), ")"));
 }
 
 absl::Status FillBlockDimLimit(GpuDeviceHandle device,

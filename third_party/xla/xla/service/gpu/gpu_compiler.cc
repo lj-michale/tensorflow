@@ -16,13 +16,12 @@ limitations under the License.
 #include "xla/service/gpu/gpu_compiler.h"
 
 #include <algorithm>
-#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
-#include <tuple>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -55,14 +54,9 @@ limitations under the License.
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
-#include "mlir/IR/Builders.h"  // from @llvm-project
-#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/Diagnostics.h"  // from @llvm-project
 #include "mlir/IR/DialectRegistry.h"  // from @llvm-project
-#include "mlir/IR/OwningOpRef.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
-#include "xla/debug_options_flags.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
@@ -84,7 +78,6 @@ limitations under the License.
 #include "xla/service/bitcast_dtypes_expander.h"
 #include "xla/service/broadcast_canonicalizer.h"
 #include "xla/service/buffer_assignment.h"
-#include "xla/service/buffer_value.h"
 #include "xla/service/call_inliner.h"
 #include "xla/service/collective_permute_decomposer.h"
 #include "xla/service/collective_pipeliner.h"
@@ -116,14 +109,12 @@ limitations under the License.
 #include "xla/service/gather_simplifier.h"
 #include "xla/service/gpu/address_computation_fusion_rewriter.h"
 #include "xla/service/gpu/algorithm_checker.h"
-#include "xla/service/gpu/alias_passthrough_params.h"
 #include "xla/service/gpu/all_reduce_blueconnect.h"
 #include "xla/service/gpu/autotuner_util.h"
 #include "xla/service/gpu/collective_permute_cycle_decomposer.h"
 #include "xla/service/gpu/command_buffer_scheduling.h"
 #include "xla/service/gpu/compile_module_to_llvm_ir.h"
 #include "xla/service/gpu/conv_layout_normalization.h"
-#include "xla/service/gpu/copy_fusion.h"
 #include "xla/service/gpu/custom_kernel_fusion_rewriter.h"
 #include "xla/service/gpu/dot_dimension_sorter.h"
 #include "xla/service/gpu/dot_operand_converter.h"
@@ -134,7 +125,6 @@ limitations under the License.
 #include "xla/service/gpu/gemm_rewriter.h"
 #include "xla/service/gpu/gpu_all_gather_optimizer.h"
 #include "xla/service/gpu/gpu_async_collective_annotator.h"
-#include "xla/service/gpu/gpu_constants.h"
 #include "xla/service/gpu/gpu_conv_rewriter.h"
 #include "xla/service/gpu/gpu_convert_async_collectives_to_sync.h"
 #include "xla/service/gpu/gpu_executable.h"
@@ -147,7 +137,6 @@ limitations under the License.
 #include "xla/service/gpu/gpu_scatter_expander.h"
 #include "xla/service/gpu/gpu_windowed_einsum_handler.h"
 #include "xla/service/gpu/hlo_fusion_stats.h"
-#include "xla/service/gpu/horizontal_loop_fusion.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/ir_emitter_context.h"
 #include "xla/service/gpu/ir_emitter_unnested.h"
@@ -157,6 +146,7 @@ limitations under the License.
 #include "xla/service/gpu/model/gpu_cost_model_stats_collection.h"
 #include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
 #include "xla/service/gpu/move_copy_to_users.h"
+#include "xla/service/gpu/pipelined_p2p_rewriter.h"
 #include "xla/service/gpu/prepare_hlo_for_ir_emitting_pipeline.h"
 #include "xla/service/gpu/reduction_degenerate_dim_remover.h"
 #include "xla/service/gpu/reduction_dimension_grouper.h"
@@ -173,6 +163,7 @@ limitations under the License.
 #include "xla/service/gpu/topk_specializer.h"
 #include "xla/service/gpu/topk_splitter.h"
 #include "xla/service/gpu/tree_reduction_rewriter.h"
+#include "xla/service/gpu/triton_fusion_numerics_verifier.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/service/hlo_computation_deduplicator.h"
 #include "xla/service/hlo_constant_folding.h"
@@ -181,7 +172,6 @@ limitations under the License.
 #include "xla/service/hlo_dataflow_analysis.h"
 #include "xla/service/hlo_dce.h"
 #include "xla/service/hlo_module_config.h"
-#include "xla/service/hlo_ordering.h"
 #include "xla/service/hlo_pass_fix.h"
 #include "xla/service/hlo_pass_pipeline.h"
 #include "xla/service/hlo_rematerialization.h"
@@ -192,9 +182,7 @@ limitations under the License.
 #include "xla/service/layout_assignment.h"
 #include "xla/service/layout_normalization.h"
 #include "xla/service/llvm_ir/llvm_util.h"
-#include "xla/service/logical_buffer.h"
 #include "xla/service/logistic_expander.h"
-#include "xla/service/loop_schedule_linearizer.h"
 #include "xla/service/operand_upcaster.h"
 #include "xla/service/optimization_barrier_expander.h"
 #include "xla/service/optimize_input_output_buffer_alias.h"
@@ -233,7 +221,6 @@ limitations under the License.
 #include "xla/shape_util.h"
 #include "xla/status.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/device_description.pb.h"
 #include "xla/stream_executor/dnn.h"
@@ -251,7 +238,6 @@ limitations under the License.
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/numbers.h"
-#include "tsl/platform/path.h"
 #include "tsl/platform/protobuf.h"  // IWYU pragma: keep
 #include "tsl/platform/statusor.h"
 #include "tsl/platform/threadpool.h"
@@ -465,7 +451,8 @@ GpuThunkAotCompilationResult::LoadExecutable(
       se::Platform * platform,
       se::PlatformManager::PlatformWithId(compiler->PlatformId()));
   std::string platform_name = platform->Name();
-  se::DeviceDescription gpu_device_info = stream_exec->GetDeviceDescription();
+  const se::DeviceDescription& gpu_device_info =
+      stream_exec->GetDeviceDescription();
   mlir::DialectRegistry registry;
   auto mlir_context = std::make_unique<mlir::MLIRContext>(registry);
   llvm::LLVMContext llvm_context;
@@ -919,9 +906,8 @@ absl::Status RunCollectiveOptimizationPasses(
         /*pipelining_direction=*/
         CollectivePipeliner::PipeliningDirection::kForward,
         /*should_process=*/HloPredicateIsOp<HloOpcode::kAllReduce>,
-        /*acceptable_formatting=*/[](const HloInstruction*) { return true; },
-        /*reuse_pipelined_op_buffer=*/
-        [](const HloInstruction*) { return false; }};
+        /*acceptable_formatting=*/HloPredicateTrue,
+        /*reuse_pipelined_op_buffer=*/HloPredicateFalse};
     collectives_pipeline.AddPass<CollectivePipeliner>(config);
   }
   if (debug_options.xla_gpu_enable_pipelined_collectives() ||
@@ -935,9 +921,8 @@ absl::Status RunCollectiveOptimizationPasses(
         /*pipelining_direction=*/
         CollectivePipeliner::PipeliningDirection::kBackward,
         /*should_process=*/HloPredicateIsOp<HloOpcode::kAllGather>,
-        /*acceptable_formatting=*/[](const HloInstruction*) { return true; },
-        /*reuse_pipelined_op_buffer=*/
-        [](const HloInstruction*) { return false; }};
+        /*acceptable_formatting=*/HloPredicateTrue,
+        /*reuse_pipelined_op_buffer=*/HloPredicateFalse};
     collectives_pipeline.AddPass<CollectivePipeliner>(config);
   }
   if (debug_options.xla_gpu_enable_pipelined_collectives() ||
@@ -951,9 +936,8 @@ absl::Status RunCollectiveOptimizationPasses(
         /*pipelining_direction=*/
         CollectivePipeliner::PipeliningDirection::kForward,
         /*should_process=*/HloPredicateIsOp<HloOpcode::kReduceScatter>,
-        /*acceptable_formatting=*/[](const HloInstruction*) { return true; },
-        /*reuse_pipelined_op_buffer=*/
-        [](const HloInstruction*) { return false; }};
+        /*acceptable_formatting=*/HloPredicateTrue,
+        /*reuse_pipelined_op_buffer=*/HloPredicateFalse};
     collectives_pipeline.AddPass<CollectivePipeliner>(config);
   }
 
@@ -1132,40 +1116,31 @@ absl::Status RunPostFusionCollectiveOptimizationPasses(HloModule* hlo_module) {
   config.convert_all_to_all = HloPredicateTrue;
   pipeline.AddPass<AsyncCollectiveCreator>(std::move(config));
 
-  auto convert_to_async = [&hlo_module](const HloInstruction* inst) {
-    const bool enable_all_async =
-        hlo_module->config().debug_options().xla_gpu_enable_async_collectives();
+  absl::flat_hash_set<DebugOptions::CollectiveOpType> disabled_async_ops;
+  for (auto collective_op_type : hlo_module->config()
+                                     .debug_options()
+                                     .xla_gpu_disable_async_collectives()) {
+    disabled_async_ops.insert(
+        static_cast<DebugOptions::CollectiveOpType>(collective_op_type));
+  }
+  auto convert_to_async = [&disabled_async_ops](const HloInstruction* inst) {
     switch (inst->opcode()) {
       case HloOpcode::kAllReduceStart:
-        return enable_all_async || hlo_module->config()
-                                       .debug_options()
-                                       .xla_gpu_enable_async_all_reduce();
-      case HloOpcode::kAllGatherStart:
-        return enable_all_async || hlo_module->config()
-                                       .debug_options()
-                                       .xla_gpu_enable_async_all_gather();
+        return !disabled_async_ops.contains(DebugOptions::ALLREDUCE);
       case HloOpcode::kCollectivePermuteStart:
-        return enable_all_async ||
-               hlo_module->config()
-                   .debug_options()
-                   .xla_gpu_enable_async_collective_permute();
+        return !disabled_async_ops.contains(DebugOptions::COLLECTIVEPERMUTE);
+      case HloOpcode::kAllGatherStart:
+        return !disabled_async_ops.contains(DebugOptions::ALLGATHER);
       case HloOpcode::kAsyncStart: {
         auto async_inst = Cast<HloAsyncInstruction>(inst);
         switch (async_inst->async_wrapped_opcode()) {
           case HloOpcode::kCollectiveBroadcast:
-            return enable_all_async ||
-                   hlo_module->config()
-                       .debug_options()
-                       .xla_gpu_enable_async_collective_broadcast();
+            return !disabled_async_ops.contains(
+                DebugOptions::COLLECTIVEBROADCAST);
           case HloOpcode::kReduceScatter:
-            return enable_all_async ||
-                   hlo_module->config()
-                       .debug_options()
-                       .xla_gpu_enable_async_reduce_scatter();
+            return !disabled_async_ops.contains(DebugOptions::REDUCESCATTER);
           case HloOpcode::kAllToAll:
-            return enable_all_async || hlo_module->config()
-                                           .debug_options()
-                                           .xla_gpu_enable_async_all_to_all();
+            return !disabled_async_ops.contains(DebugOptions::ALLTOALL);
           default:
             return false;
         }
@@ -1198,6 +1173,26 @@ absl::Status RunPostFusionSimplificationPasses(
           .xla_gpu_multi_streamed_windowed_einsum()) {
     pipeline.AddPass<StreamAttributeAnnotator>();
     pipeline.AddPass<StreamAttributeAsyncWrapper>();
+  }
+
+  return pipeline.Run(hlo_module).status();
+}
+
+absl::Status RunPostFusionVerificationPasses(
+    HloModule* hlo_module, se::StreamExecutor* stream_exec,
+    const GpuCompiler::CompileOptions& options,
+    const Compiler::TargetConfig& gpu_target_config) {
+  HloPassPipeline pipeline("post-fusion-verification-pipeline optimization");
+
+  if (hlo_module->config()
+          .debug_options()
+          .xla_gpu_verify_triton_fusion_numerics()) {
+    TF_ASSIGN_OR_RETURN(
+        AutotuneConfig autotune_config,
+        GetAutotuneConfig(stream_exec, hlo_module->config().debug_options(),
+                          options, gpu_target_config));
+
+    pipeline.AddPass<TritonFusionNumericsVerifier>(autotune_config);
   }
 
   return pipeline.Run(hlo_module).status();
@@ -1306,6 +1301,9 @@ absl::Status GpuCompiler::OptimizeHloModule(
   TF_RETURN_IF_ERROR(RunPostFusionCollectiveOptimizationPasses(hlo_module));
   TF_RETURN_IF_ERROR(RunPostFusionSimplificationPasses(
       hlo_module, layout_insensitive_algsimp_opts));
+
+  TF_RETURN_IF_ERROR(RunPostFusionVerificationPasses(
+      hlo_module, stream_exec, options, gpu_target_config));
 
   return absl::OkStatus();
 }  // NOLINT(readability/fn_size)
@@ -1582,7 +1580,7 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
 absl::StatusOr<std::unique_ptr<HloModule>> GpuCompiler::RunHloPasses(
     std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
     const CompileOptions& options) {
-  const DebugOptions& debug_opts = module->config().debug_options();
+  const DebugOptions debug_opts = module->config().debug_options();
   TF_RETURN_IF_ERROR(LoadAutotuneResultsFromFile(debug_opts));
   bool is_deviceless = options.target_config.has_value() ||
                        !debug_opts.xla_gpu_target_config_filename().empty();
@@ -1614,13 +1612,15 @@ absl::StatusOr<std::unique_ptr<HloModule>> GpuCompiler::RunHloPasses(
   // out we have no way of telling how far through the process we got).
   RecordHloPassesDuration(end_usecs - start_usecs);
 
-  TF_ASSIGN_OR_RETURN(
-      AutotuneConfig autotune_config,
-      GetAutotuneConfig(stream_exec, debug_opts, options, gpu_target_config));
+  DumpHloModuleMetadataIfEnabled({module.get()});
+
   AutotuneResults autotune_results;
   if (!is_deviceless) {
-    TF_RETURN_IF_ERROR(
-        AutotunerUtil::SerializeAutotuneResults(&autotune_results));
+    TF_ASSIGN_OR_RETURN(
+        AutotuneConfig autotune_config,
+        GetAutotuneConfig(stream_exec, debug_opts, options, gpu_target_config));
+    autotune_results = AutotunerUtil::SerializeAutotuneResultsForModule(
+        *module, autotune_config);
     TF_RETURN_IF_ERROR(SerializeAutotuneResultsToFile(debug_opts));
   }
   const std::optional<std::string> optimized_fingerprint =
@@ -2183,6 +2183,12 @@ absl::Status GpuCompiler::RunPostSchedulingPipelines(
   {
     HloPassPipeline pipeline("post-scheduling-passes");
 
+    if (module->config()
+            .debug_options()
+            .xla_gpu_enable_pipelined_collectives() ||
+        module->config().debug_options().xla_gpu_enable_pipelined_p2p()) {
+      pipeline.AddPass<PipelinedP2PRewriter>();
+    }
     HloPredicate is_nop =
         HloPredicateIsOp<HloOpcode::kParameter, HloOpcode::kConstant,
                          HloOpcode::kBitcast, HloOpcode::kGetTupleElement>;

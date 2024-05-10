@@ -65,8 +65,8 @@ def TF_CustomAggregatorOp : TF_Op<"CustomAggregator", [Pure]> {
     StrAttr:$id,
     // The integer value of the enforcing `CalibrationMethod`.
     I32Attr:$calibration_method,
-    // The number of bins when histogram is initialized.
-    I32Attr:$initial_num_bins,
+    // The number of histogram bins.
+    I32Attr:$num_bins,
     // Min percentile to be included in the selected range, only used in the
     // `HISTOGRAM_PERCENTILE` method.
     F32Attr:$min_percentile,
@@ -81,6 +81,20 @@ def TF_CustomAggregatorOp : TF_Op<"CustomAggregator", [Pure]> {
     TensorOf<[TF_Float32]>:$max,
     TensorOf<[TF_Int64]>:$histogram
   );
+}
+
+def TF_CalibrationStatisticsSaverOp : TF_Op<"CalibrationStatisticsSaver", []> {
+  let summary = "Aggregates and saves calibration statistics.";
+
+  let arguments = (ins
+    Variadic<TensorOf<[TF_Float32, TF_Int64]>>:$inputs,
+
+    StrAttr:$output_file_path,
+    StrArrayAttr:$ids,
+    I32ArrayAttr:$calibration_methods
+  );
+
+  TF_DerivedOperandTypeListAttr Tin = TF_DerivedOperandTypeListAttr<0>;
 }
 
 def TF_DumpTensorOp : TF_Op<"DumpTensor", []> {

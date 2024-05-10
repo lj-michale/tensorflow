@@ -224,10 +224,6 @@ class PjRtStreamExecutorClient : public PjRtClient {
     return addressable_devices_;
   }
 
-  StatusOr<PjRtDevice*> LookupDevice(int device_id) const override {
-    return LookupDevice(PjRtGlobalDeviceId(device_id));
-  }
-
   StatusOr<PjRtDevice*> LookupDevice(
       PjRtGlobalDeviceId global_device_id) const override {
     auto it = id_to_device_.find(global_device_id.value());
@@ -403,7 +399,8 @@ class PjRtStreamExecutorClient : public PjRtClient {
     }
   }
 
-  virtual PjRtFuture<> CopyRawSubBufferToHost(PjRtBuffer* buffer, void* dst,
+  virtual PjRtFuture<> CopyRawSubBufferToHost(PjRtBuffer* buffer,
+                                              PjRtFuture<void*> dst,
                                               int64_t offset,
                                               int64_t transfer_size) {
     return PjRtFuture<>(Unimplemented("Raw copies to host not implemented."));
@@ -675,8 +672,7 @@ class PjRtStreamExecutorBuffer : public PjRtBuffer {
   PjRtFuture<> CopyRawToHost(void* dst, int64_t offset,
                              int64_t transfer_size) override;
 
-  PjRtFuture<> CopyRawToHostFuture(PjRtFuture<StatusOr<void*>> dst,
-                                   int64_t offset,
+  PjRtFuture<> CopyRawToHostFuture(PjRtFuture<void*> dst, int64_t offset,
                                    int64_t transfer_size) override;
 
   // Drops the buffer's reference to its associated device memory, leaving the
@@ -714,12 +710,11 @@ class PjRtStreamExecutorBuffer : public PjRtBuffer {
     return Unimplemented("Implement CopyToMemorySpace");
   }
 
-  void CopyToRemoteDevice(
-      PjRtFuture<StatusOr<std::string>> serialized_descriptor,
-      RemoteSendCallback on_done) override;
+  void CopyToRemoteDevice(PjRtFuture<std::string> serialized_descriptor,
+                          RemoteSendCallback on_done) override;
 
   void CopyToRemoteDeviceScattered(
-      PjRtFuture<StatusOr<std::vector<std::string>>> serialized_descriptors,
+      PjRtFuture<std::vector<std::string>> serialized_descriptors,
       std::vector<RemoteSendCallback> callbacks,
       const ScatterDetails& scatter_details) override;
 

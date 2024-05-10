@@ -51,7 +51,7 @@ module attributes {tf_saved_model.semantics} {
 
 // -----
 
-// Tests that `stablehlo.dot_general` with `batching_dim` is not quantized.
+// Tests that `stablehlo.dot_general` with `batching_dim` is quantized.
 
 module attributes {tf_saved_model.semantics} {
   func.func private @quantize_dot_general_batch_per_tensor_quantized_fn(%arg0: tensor<2x2x2xf32>) -> tensor<2x2x3xf32> attributes {tf._original_func_name = "main_0"} {
@@ -62,9 +62,9 @@ module attributes {tf_saved_model.semantics} {
     return %2 : tensor<2x2x3xf32>
   }
 // CHECK: func.func private @quantize_dot_general_batch_per_tensor_quantized_fn(%[[ARG_0:.+]]: tensor<2x2x2xf32>) -> tensor<2x2x3xf32> attributes {tf._original_func_name = "main_0"}
-// CHECK: %[[CONST_0:.+]] = stablehlo.constant() <{value = dense<127> : tensor<2x2x3xi8>}> : () -> tensor<2x2x3x!quant.uniform<i8:f32, {{.*}}>>
+// CHECK: %[[CONST_0:.+]] = stablehlo.constant() <{value = dense<127> : tensor<2x2x3xi8>}> : () -> tensor<2x2x3x!quant.uniform<i8<-127:127>:f32, {{.*}}>>
 // CHECK: %[[UNIFORM_QUANTIZE_0:.+]] = stablehlo.uniform_quantize %[[ARG_0]] : (tensor<2x2x2xf32>) -> tensor<2x2x2x!quant.uniform<i8:f32, {{.*}}>>
-// CHECK: %[[CALL_0:.+]] = call @quantized_dot_general_fn(%[[UNIFORM_QUANTIZE_0]], %[[CONST_0]]) {_quantization_method = "static_range_ptq { }"} : (tensor<2x2x2x!quant.uniform<i8:f32, {{.*}}>>, tensor<2x2x3x!quant.uniform<i8:f32, {{.*}}>) -> tensor<2x2x3x!quant.uniform<i8:f32, {{.*}}>>
+// CHECK: %[[CALL_0:.+]] = call @quantized_dot_general_fn(%[[UNIFORM_QUANTIZE_0]], %[[CONST_0]]) {_quantization_method = "static_range_ptq { }"} : (tensor<2x2x2x!quant.uniform<i8:f32, {{.*}}>>, tensor<2x2x3x!quant.uniform<i8<-127:127>:f32, {{.*}}>) -> tensor<2x2x3x!quant.uniform<i8:f32, {{.*}}>>
 // CHECK: %[[UNIFORM_DEQUANTIZE_0:.+]] = stablehlo.uniform_dequantize %[[CALL_0]] : (tensor<2x2x3x!quant.uniform<i8:f32, {{.*}}>) -> tensor<2x2x3xf32>
 // CHECK: return %[[UNIFORM_DEQUANTIZE_0]] : tensor<2x2x3xf32>
 
@@ -836,4 +836,54 @@ module attributes {tf_saved_model.semantics} {
 // CHECK: %[[DOT_GENERAL:.+]] = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] : (tensor<1x2x!quant.uniform<i8:f32, {{.*}}>>, tensor<2x3x!quant.uniform<i8<-127:127>:f32:1,{{.*}}>>) -> tensor<1x3x!quant.uniform<i32:f32:1, {{.*}}>>
 // CHECK: %[[UNIFORM_QUANTIZE:.+]] = stablehlo.uniform_quantize %[[DOT_GENERAL]] : (tensor<1x3x!quant.uniform<i32:f32:1, {{.*}}>>) -> tensor<1x3x!quant.uniform<i8:f32, {{.*}}>>
 // CHECK: return %[[UNIFORM_QUANTIZE]] : tensor<1x3x!quant.uniform<i8:f32, {{.*}}>>
+}
+
+// -----
+
+// Tests that `stablehlo.add` is not quantized and emits error when the function
+// does not include two ops.
+
+module attributes {tf_saved_model.semantics} {
+  func.func private @not_quantize_fn_when_not_singular(%arg: tensor<1x2xf32>) -> tensor<1x2xf32> attributes {tf._original_func_name = "main_0"} {
+    %cst = "tf.Const"() {value = dense<1.00000000e-1> : tensor<1x2xf32>} : () -> tensor<1x2xf32>
+    %0 = "quantfork.stats"(%arg) {layerStats = dense<[4.00000000e-6, 9.80000000e-1]> : tensor<2xf32>} : (tensor<1x2xf32>) -> tensor<1x2xf32>
+    %1 = "tf.XlaCallModule"(%0, %cst) {Sout = [#tf_type.shape<1x2>], _entry_function = @composite_add_fn, _original_entry_function = "composite_add_fn", _quantization_method = "static_range_ptq { }", _stablehlo_module_attrs = {}, _tfl_quant_trait = "fully_quantizable", device = "", dim_args_spec = [], disabled_checks = [], has_token_input_output = false, module = "", platforms = [], version = 5 : i64} : (tensor<1x2xf32>, tensor<1x2xf32>) -> tensor<1x2xf32>
+    // expected-error@+1 {{'stablehlo.uniform_dequantize' op operand #0 must be tensor of 4/8/16/32-bit uniform quantized signed integer or 4/8/16/32-bit uniform quantized unsigned integer or 4/8/16/32-bit uniform quantized per axis signed integer or 4/8/16/32-bit uniform quantized per axis unsigned integer values, but got 'tensor<1x2xf32>'}}
+    %2 = "quantfork.stats"(%1) {layerStats = dense<[4.00000000e-6, 9.80000000e-1]> : tensor<2xf32>} : (tensor<1x2xf32>) -> tensor<1x2xf32>
+    return %2 : tensor<1x2xf32>
+  }
+
+  func.func private @composite_add_fn(%arg0: tensor<1x2xf32>, %arg1: tensor<1x2xf32>) -> tensor<1x2xf32> attributes {_from_xla_call_module} {
+    %0 = stablehlo.add %arg0, %arg1 : tensor<1x2xf32>
+    %1 = stablehlo.add %0, %arg1 : tensor<1x2xf32>
+    return %1 : tensor<1x2xf32>
+  }
+}
+
+// -----
+
+// Tests that `stablehlo.gather` without `static_range_ptq` is not quantized.
+
+module attributes {tf_saved_model.semantics} {
+  func.func private @not_quantize_singular_op_without_static_range_ptq(%arg: tensor<3x4x2xf32>) -> tensor<2x3x2x2xf32> attributes {tf._original_func_name = "main_0"} {
+    %cst = "tf.Const"() {value = dense<1> : tensor<2x3x2xi32>} : () -> tensor<2x3x2xi32>
+    %0 = "quantfork.stats"(%arg) {layerStats = dense<[4.00000000e-6, 9.80000000e-1]> : tensor<2xf32>} : (tensor<3x4x2xf32>) -> tensor<3x4x2xf32>
+    %1 = "tf.XlaCallModule"(%0, %cst) {Sout = [#tf_type.shape<2x3x2x2>], _entry_function = @composite_gather_fn, _original_entry_function = "composite_gather_fn", _stablehlo_module_attrs = {}, _tfl_quant_trait = "fully_quantizable", device = "", dim_args_spec = [], disabled_checks = [], has_token_input_output = false, module = "", platforms = [], version = 5 : i64} : (tensor<3x4x2xf32>, tensor<2x3x2xi32>) -> tensor<2x3x2x2xf32>
+    // expected-error@+1 {{'stablehlo.uniform_dequantize' op operand #0 must be tensor of 4/8/16/32-bit uniform quantized signed integer or 4/8/16/32-bit uniform quantized unsigned integer or 4/8/16/32-bit uniform quantized per axis signed integer or 4/8/16/32-bit uniform quantized per axis unsigned integer values, but got 'tensor<2x3x2x2xf32>'}}
+    %2 = "quantfork.stats"(%1) {layerStats = dense<[4.00000000e-6, 9.80000000e-1]> : tensor<2xf32>} : (tensor<2x3x2x2xf32>) -> tensor<2x3x2x2xf32>
+    return %2 : tensor<2x3x2x2xf32>
+  }
+
+  func.func private @composite_gather_fn(%arg0: tensor<3x4x2xf32>, %arg1: tensor<2x3x2xi32>) -> tensor<2x3x2x2xf32> attributes {_from_xla_call_module} {
+    %0 = "stablehlo.gather"(%arg0, %arg1) {
+      dimension_numbers = #stablehlo.gather<
+        offset_dims = [2, 3],
+        collapsed_slice_dims = [0],
+        start_index_map = [1, 0],
+        index_vector_dim = 2>,
+      slice_sizes = array<i64: 1, 2, 2>,
+      indices_are_sorted = false
+    } : (tensor<3x4x2xf32>, tensor<2x3x2xi32>) -> tensor<2x3x2x2xf32>
+    return %0 : tensor<2x3x2x2xf32>
+  }
 }
