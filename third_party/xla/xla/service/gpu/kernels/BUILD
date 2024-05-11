@@ -1,6 +1,5 @@
 load("@local_config_cuda//cuda:build_defs.bzl", "cuda_library")
 load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm_is_configured")
-load("@local_tsl//tsl/platform:build_config_root.bzl", "tf_gpu_tests_tags")
 load(
     "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
@@ -48,7 +47,6 @@ cc_library(
     hdrs = ["custom_kernel_fusion_pattern.h"],
     visibility = [":friends"],
     deps = [
-        "//xla:statusor",
         "//xla/hlo/ir:hlo",
         "//xla/service/gpu:backend_configs_cc",
         "//xla/stream_executor:device_description",
@@ -92,11 +90,12 @@ cc_library(
         ":cutlass_gemm_custom_kernel",
         "//xla:shape_util",
         "//xla:status",
-        "//xla:statusor",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service:pattern_matcher",
+        "//xla/service/gpu:backend_configs_cc",
         "//xla/stream_executor:device_description",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:errors",
@@ -177,7 +176,7 @@ gpu_kernel_library(
 xla_cc_test(
     name = "topk_kernel_test",
     srcs = if_gpu_is_configured(["topk_kernel_test.cc"]),
-    tags = tf_gpu_tests_tags(),
+    use_gpu = True,
     deps = [
         ":topk_kernel",
         "//xla:types",
@@ -186,7 +185,6 @@ xla_cc_test(
         "//xla/stream_executor:device_memory_handle",
         "//xla/stream_executor:platform_manager",
         "//xla/stream_executor/gpu:gpu_init",
-        "//xla/stream_executor/gpu:gpu_stream_header",
         "//xla/stream_executor/gpu:gpu_timer",
         "//xla/stream_executor/gpu:gpu_types_header",
         "//xla/stream_executor/host:host_platform",
