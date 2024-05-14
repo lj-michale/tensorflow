@@ -1327,9 +1327,9 @@ void PjRtStreamExecutorDevice::AttachMemorySpace(
     PjRtMemorySpace* memory_space) {
   CHECK(memory_space != nullptr);
   CHECK(client_ == memory_space->client()) << absl::StrFormat(
-      "Could not attach a TfrtTpuDevice to a PjRtMemorySpace owned by a "
-      "different client, the device's client: %s, the memory space's client: "
-      "%s.",
+      "Could not attach a PjRtStreamExecutorDevice to a PjRtMemorySpace owned "
+      "by a different client, the device's client: %s, the memory space's "
+      "client: %s.",
       client_->platform_name(), memory_space->client()->platform_name());
 
   memory_spaces_.push_back(memory_space);
@@ -2772,7 +2772,9 @@ PjRtStreamExecutorLoadedExecutable::EnqueueExecution(
   if (run_options.launch_id() != 0) {
     VLOG(3) << "launch id for " << name() << ": " << run_options.launch_id();
   }
-
+  if (options.context != nullptr) {
+    run_options.set_ffi_execution_context(&options.context->ffi_context());
+  }
   // The choice of where we wait is arbitrary; the reason for the wait is
   // pacing to avoid problems such as memory fragmentation and running ahead
   // too far, not for correctness. Placing it before the executable launch
