@@ -63,9 +63,11 @@ limitations under the License.
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/dnn.h"
 #include "xla/stream_executor/kernel.h"
+#include "xla/stream_executor/kernel_factory.h"
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/stream_executor/trace_command_buffer_factory.h"
 #include "xla/tsl/concurrency/ref_count.h"
 #include "xla/types.h"  // IWYU pragma: keep
 #include "xla/util.h"
@@ -397,8 +399,9 @@ absl::StatusOr<se::CommandBuffer*> TracedCommandBuffer::GetOrTraceCommandBuffer(
     // Create a new entry by calling a user-provided tracing function, move it
     // to front and return a pointer to cached command buffer.
     if (entries_[i].command_buffer == nullptr) {
-      TF_ASSIGN_OR_RETURN(entries_[i].command_buffer,
-                          se::CommandBuffer::Trace(executor, stream, trace));
+      TF_ASSIGN_OR_RETURN(
+          entries_[i].command_buffer,
+          se::TraceCommandBufferFactory::Create(executor, stream, trace));
       entries_[i].recorded_allocs.assign(allocs.begin(), allocs.end());
       return shift_right(i).command_buffer.get();
     }
@@ -407,8 +410,9 @@ absl::StatusOr<se::CommandBuffer*> TracedCommandBuffer::GetOrTraceCommandBuffer(
   // Create a new entry by calling a user-provided tracing function, replace the
   // last entry with it, move it to front and return a pointer to cached command
   // buffer.
-  TF_ASSIGN_OR_RETURN(entries_[capacity_ - 1].command_buffer,
-                      se::CommandBuffer::Trace(executor, stream, trace));
+  TF_ASSIGN_OR_RETURN(
+      entries_[capacity_ - 1].command_buffer,
+      se::TraceCommandBufferFactory::Create(executor, stream, trace));
   entries_[capacity_ - 1].recorded_allocs.assign(allocs.begin(), allocs.end());
   return shift_right(capacity_ - 1).command_buffer.get();
 }
@@ -667,7 +671,7 @@ absl::Status CustomKernelLaunchCmd::Initialize(
 
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<se::Kernel> kernel,
-      se::Kernel::Create(params.executor, custom_kernel_.kernel_spec()));
+      se::KernelFactory::Create(params.executor, custom_kernel_.kernel_spec()));
 
   absl::MutexLock lock(&mutex_);
   kernels_.emplace(params.executor, std::move(kernel));
@@ -1209,7 +1213,7 @@ absl::Status CustomCallCmd::RecordLegacyCustomCall(
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
   TF_ASSIGN_OR_RETURN(
       auto nested_cmd,
-      se::CommandBuffer::Trace(
+      se::TraceCommandBufferFactory::Create(
           execute_params.stream->parent(),
           execute_params.command_buffer_trace_stream, [&](se::Stream* stream) {
             se::gpu::GpuStreamHandle gpu_stream =
@@ -1289,7 +1293,7 @@ absl::Status CustomCallCmd::RecordXlaFfiCall(
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
   TF_ASSIGN_OR_RETURN(
       auto nested_cmd,
-      se::CommandBuffer::Trace(
+      se::TraceCommandBufferFactory::Create(
           execute_params.stream->parent(),
           execute_params.command_buffer_trace_stream, [&](se::Stream* stream) {
             ExecutableRunOptions run_options;
@@ -1406,7 +1410,7 @@ absl::Status CollectiveCmd::AddTracedCommandBuffer(
     const RecordParams& record_params, se::CommandBuffer* command_buffer,
     absl::FunctionRef<absl::Status(se::Stream*)> trace) {
   TF_ASSIGN_OR_RETURN(std::unique_ptr<se::CommandBuffer> nested_cmd,
-                      se::CommandBuffer::Trace(
+                      se::TraceCommandBufferFactory::Create(
                           execute_params.stream->parent(),
                           execute_params.command_buffer_trace_stream, trace));
 

@@ -147,7 +147,6 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_redzone_padding_bytes(8 * 1024 * 1024);
   opts.set_xla_gpu_shape_checks(DebugOptions::RUNTIME);
   opts.set_xla_gpu_normalize_layouts(true);
-  opts.set_xla_gpu_simplify_all_fp_conversions(true);
   opts.set_xla_dump_latency_hiding_schedule(false);
   opts.set_xla_gpu_enable_latency_hiding_scheduler(false);
   opts.set_xla_gpu_lhs_enable_gpu_async_tracker(true);
@@ -249,6 +248,8 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_use_memcpy_local_p2p(false);
 
   opts.set_xla_reduce_window_rewrite_base_length(32);
+
+  opts.set_xla_gpu_require_complete_aot_autotune_results(false);
 
   return opts;
 }
@@ -1230,11 +1231,6 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "buffer it allocates. (So the buffer's total size will be increased by "
       "2x this value.)"));
   flag_list->push_back(tsl::Flag(
-      "xla_gpu_simplify_all_fp_conversions",
-      bool_setter_for(&DebugOptions::set_xla_gpu_simplify_all_fp_conversions),
-      debug_options->xla_gpu_simplify_all_fp_conversions(),
-      "Allows any chain of floating-point conversions to be simplified."));
-  flag_list->push_back(tsl::Flag(
       "xla_gpu_shape_checks", setter_for_xla_gpu_shape_checks,
       DebugOptions::ShapeChecks_Name(debug_options->xla_gpu_shape_checks()),
       "When to perform shape checks in XLA:GPU."));
@@ -1433,7 +1429,7 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "xla_gpu_require_complete_aot_autotune_results",
       bool_setter_for(
           &DebugOptions::set_xla_gpu_require_complete_aot_autotune_results),
-      debug_options->xla_gpu_multi_streamed_windowed_einsum(),
+      debug_options->xla_gpu_require_complete_aot_autotune_results(),
       "Whether to require complete AOT autotuning results."));
   flag_list->push_back(tsl::Flag(
       "xla_gpu_auto_spmd_partitioning_memory_budget_gb",
@@ -1472,6 +1468,14 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "Dumps autotuned GEMM fusions to the directory specified by "
       "xla_dump_to or stdout. Each fusion is dumped only once, as an optimized "
       "HLO."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_override_gemm_autotuner",
+      string_setter_for(&DebugOptions::set_xla_gpu_override_gemm_autotuner),
+      debug_options->xla_gpu_override_gemm_autotuner(),
+      "Overrides the GEMM autotuner to use the specified "
+      "(AutotuneResult::TritonGemmKey) textproto configuration for all Triton "
+      "GEMM fusions. (You can get such textprotos from the debug logs of the "
+      "GEMM autotuner.) "));
   flag_list->push_back(tsl::Flag(
       "xla_gpu_copy_insertion_use_region_analysis",
       bool_setter_for(

@@ -35,6 +35,8 @@ limitations under the License.
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/stream_executor/trace_command_buffer_factory.h"
+#include "xla/stream_executor/typed_kernel_factory.h"
 #include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/status.h"
@@ -66,14 +68,16 @@ static MultiKernelLoaderSpec GetAddI32KernelSpec() {
   return spec;
 }
 
-using AddI32Kernel = TypedKernel<DeviceMemory<int32_t>, DeviceMemory<int32_t>,
-                                 DeviceMemory<int32_t>>;
-using MulI32Kernel = TypedKernel<DeviceMemory<int32_t>, DeviceMemory<int32_t>,
-                                 DeviceMemory<int32_t>>;
+using AddI32Kernel =
+    TypedKernelFactory<DeviceMemory<int32_t>, DeviceMemory<int32_t>,
+                       DeviceMemory<int32_t>>;
+using MulI32Kernel =
+    TypedKernelFactory<DeviceMemory<int32_t>, DeviceMemory<int32_t>,
+                       DeviceMemory<int32_t>>;
 using IncAndCmpKernel =
-    TypedKernel<DeviceMemory<int32_t>, DeviceMemory<bool>, int32_t>;
+    TypedKernelFactory<DeviceMemory<int32_t>, DeviceMemory<bool>, int32_t>;
 
-using AddI32Ptrs3 = TypedKernel<internal::Ptrs3<int32_t>>;
+using AddI32Ptrs3 = TypedKernelFactory<internal::Ptrs3<int32_t>>;
 
 static constexpr auto nested = CommandBuffer::Mode::kNested;    // NOLINT
 static constexpr auto primary = CommandBuffer::Mode::kPrimary;  // NOLINT
@@ -199,7 +203,7 @@ TEST(CudaCommandBufferTest, TraceSingleKernel) {
   KernelArgsDeviceMemoryArray args({a, b, c}, 0);
 
   // Create a command buffer by tracing kernel launch operations.
-  auto cmd_buffer = CommandBuffer::Trace(
+  auto cmd_buffer = TraceCommandBufferFactory::Create(
       executor,
       [&](Stream* stream) {
         return executor->Launch(stream, ThreadDim(), BlockDim(4), *add, args);
@@ -1320,7 +1324,8 @@ static void BM_TraceCommandBuffer(benchmark::State& state) {
       return absl::OkStatus();
     };
 
-    CHECK_OK(CommandBuffer::Trace(executor, launch_kernels, nested));
+    CHECK_OK(
+        TraceCommandBufferFactory::Create(executor, launch_kernels, nested));
   }
 }
 
