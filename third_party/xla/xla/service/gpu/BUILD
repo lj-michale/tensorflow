@@ -814,7 +814,9 @@ xla_test(
         "@local_tsl//tsl/platform:platform_port",
         "@local_tsl//tsl/platform:status_matchers",
         "@local_tsl//tsl/platform:statusor",
-    ],
+    ] + if_cuda_is_configured([
+        "@local_config_cuda//cuda:cuda_headers",
+    ]),
 )
 
 cc_library(
@@ -872,13 +874,6 @@ cc_library(
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:logging",
     ],
-)
-
-cuda_library(
-    name = "sleep_kernel",
-    srcs = if_cuda_is_configured(["sleep_kernel.cu.cc"]),
-    hdrs = if_cuda_is_configured(["sleep_kernel.h"]),
-    deps = ["@local_config_cuda//cuda:cuda_headers"],
 )
 
 # TODO(b/244780257): Remove this config.
@@ -3987,6 +3982,7 @@ cc_library(
         ":conv_algorithm_picker",
         ":cublas_pad_for_gemms",
         ":cublas_padding_requirements",
+        ":cudnn_fused_conv_rewriter",
         ":cusolver_rewriter",
         ":gemm_algorithm_picker",
         ":gpu_compiler",
@@ -5845,6 +5841,7 @@ xla_cc_test(
         "//xla:xla_data_proto_cc",
         "//xla:xla_proto_cc",
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/utils:hlo_query",
         "//xla/service:tuple_simplifier",
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",
