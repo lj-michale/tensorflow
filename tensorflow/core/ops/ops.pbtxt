@@ -1,4 +1,3 @@
-go/nodeserialize  
 op {
   name: "Abort"
   attr {

@@ -78,7 +78,7 @@ static std::string GetGlobalTopologyKey(std::string_view platform) {
 static absl::StatusOr<std::vector<LocalTopologyProto>> GetAllLocalTopologies(
     std::string_view platform, int num_nodes, KeyValueStoreInterface* kv_store,
     absl::Duration timeout) {
-  std::vector<StatusOr<std::string>> local_topology_strs(num_nodes);
+  std::vector<absl::StatusOr<std::string>> local_topology_strs(num_nodes);
 
   // TODO(ezhulenev): Should a thread pool become a function argument?
   tsl::thread::ThreadPool thread_pool(
@@ -156,12 +156,13 @@ GlobalTopologyProto BuildGlobalTopology(
   return global_topology;
 }
 
-Status ExchangeTopologies(std::string_view platform, int node_id, int num_nodes,
-                          absl::Duration get_local_topology_timeout,
-                          absl::Duration get_global_topology_timeout,
-                          KeyValueStoreInterface* kv_store,
-                          const LocalTopologyProto& local_topology,
-                          GlobalTopologyProto* global_topology) {
+absl::Status ExchangeTopologies(std::string_view platform, int node_id,
+                                int num_nodes,
+                                absl::Duration get_local_topology_timeout,
+                                absl::Duration get_global_topology_timeout,
+                                KeyValueStoreInterface* kv_store,
+                                const LocalTopologyProto& local_topology,
+                                GlobalTopologyProto* global_topology) {
   VLOG(3) << "Local Topology for platform" << platform << ":\n"
           << local_topology.DebugString();
   if (num_nodes == 1) {

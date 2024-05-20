@@ -216,15 +216,6 @@ cc_library(
 )
 
 cc_library(
-    name = "xnnpack_delegate_test",
-    testonly = True,
-    hdrs = ["xnnpack_delegate_test.h"],
-    deps = [
-        ":xnnpack_delegate",
-    ],
-)
-
-cc_library(
     name = "xnnpack_delegate",
     srcs = ["xnnpack_delegate.cc"],
     hdrs = ["xnnpack_delegate.h"],
@@ -254,6 +245,7 @@ cc_library(
         ":tflite_with_xnnpack_transient_indirection_buffer",
         ":weight_cache",
         "//tensorflow/lite:kernel_api",
+        "//tensorflow/lite:logger",
         "//tensorflow/lite:minimal_logging",
         "//tensorflow/lite/c:c_api_types",
         "//tensorflow/lite/core:subgraph",
