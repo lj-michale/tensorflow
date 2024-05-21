@@ -1677,7 +1677,7 @@ xla_test(
     srcs = if_gpu_is_configured(["gemm_algorithm_picker_test.cc"]),
     backends = [
         "gpu_v100",
-    ] + if_oss(["gpu_any"]),
+    ],
     deps = [
         ":autotuner_util",
         ":backend_configs_cc",
@@ -1974,7 +1974,7 @@ xla_test(
     srcs = if_gpu_is_configured(["conv_algorithm_picker_test.cc"]),
     backends = [
         "gpu_v100",
-    ] + if_oss(["gpu_any"]),
+    ],
     tags = [
         "noasan",
         "nomsan",
@@ -3998,6 +3998,7 @@ cc_library(
         "//xla/service:convert_mover",
         "//xla/service:dot_dimension_merger",
         "//xla/service:float_normalization",
+        "//xla/service:float_support",
         "//xla/service:hlo_constant_folding",
         "//xla/service:hlo_module_config",
         "//xla/service:hlo_pass",
