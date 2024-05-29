@@ -113,8 +113,7 @@ GpuPerformanceModelWithIndexingAnalysis::EstimateRunTimeForFusion(
   auto root_shape = roots.front().shape();
 
   LaunchDimensions launch_dimensions =
-      EstimateFusionLaunchDimensions(ShapeUtil::ElementsInRecursive(root_shape),
-                                     fusion_analysis, *device_info_);
+      EstimateFusionLaunchDimensions(fusion_analysis);
 
   int64_t num_threads = launch_dimensions.launch_bound();
   int64_t num_blocks = launch_dimensions.num_blocks();
@@ -175,11 +174,15 @@ GpuPerformanceModelWithIndexingAnalysis::EstimateRunTimeForFusion(
       compute_time, memory_access_time,
       GpuPerformanceModelOptions::PriorityFusion());
 
-  VLogResult(flops, bytes_read, bytes_written, num_threads, compute_time,
-             read_time, write_time, exec_time);
+  EstimateRunTimeData runtime_data = {flops,     bytes_read, bytes_written,
+                                      read_time, write_time, compute_time,
+                                      exec_time};
+  VLOG(3) << "Runtime data for HLO fusion: " << fusion_adaptor.ToString()
+          << "\n"
+          << launch_dimensions.ToString() << "\n"
+          << runtime_data.ToString();
 
-  return EstimateRunTimeData{flops,      bytes_written, num_threads, read_time,
-                             write_time, compute_time,  exec_time};
+  return runtime_data;
 }
 
 EstimateRunTimeData
@@ -187,13 +190,20 @@ GpuPerformanceModelWithIndexingAnalysis::EstimateRunTimeForInstruction(
     const HloInstruction* producer) {
   // Stand-alone bitcast is always no-op during runtime.
   if (producer->opcode() == HloOpcode::kBitcast) {
-    return {0, 0, 0, absl::ZeroDuration(), absl::ZeroDuration()};
+    return EstimateRunTimeData{/*flops=*/0,
+                               /*bytes_read=*/0,
+                               /*bytes_written=*/0,
+                               /*read_time=*/absl::ZeroDuration(),
+                               /*write_time=*/absl::ZeroDuration(),
+                               /*compute_time=*/absl::ZeroDuration(),
+                               /*exec_time=*/absl::ZeroDuration()};
   }
 
   auto fusion_analysis = AnalyzeFusion(*producer, *device_info_);
 
-  bool is_coalesced = IsReadCoalescedHeuristic(
-      fusion_analysis.GetEmitterFusionKind(), producer);
+  bool is_coalesced =
+      IsReadCoalescedHeuristic(fusion_analysis.GetEmitterFusionKind(),
+                               fusion_analysis.device_info(), producer);
   return EstimateRunTimeForFusion(fusion_analysis, is_coalesced);
 }
 
@@ -204,7 +214,8 @@ GpuPerformanceModelWithIndexingAnalysis::EstimateRunTimeForProducerConsumer(
       AnalyzeProducerConsumerFusion(*producer, *consumer, *device_info_);
 
   bool is_coalesced = IsReadCoalescedHeuristic(
-      fusion_analysis.GetEmitterFusionKind(), producer, consumer);
+      fusion_analysis.GetEmitterFusionKind(), fusion_analysis.device_info(),
+      producer, consumer);
   return EstimateRunTimeForFusion(fusion_analysis, is_coalesced);
 }
 

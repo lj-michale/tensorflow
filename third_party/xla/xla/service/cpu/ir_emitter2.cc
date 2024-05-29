@@ -1,0 +1,279 @@
+/* Copyright 2024 The OpenXLA Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#include "xla/service/cpu/ir_emitter2.h"
+
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
+#include "llvm/IR/CallingConv.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Value.h"
+#include "llvm/Support/Casting.h"
+#include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/service/cpu/elemental_math_emitter.h"
+#include "xla/service/elemental_ir_emitter.h"
+#include "xla/service/llvm_ir/ir_array.h"
+#include "xla/service/llvm_ir/llvm_util.h"
+#include "xla/service/llvm_ir/loop_emitter.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/logging.h"
+
+namespace xla::cpu {
+namespace {
+
+// We do not materialize buffers for tuples at run time, and work only with leaf
+// arrays. These are the helper functions to flatten HLO instruction parameters
+// and results into a list of leaf shapes.
+
+static std::vector<Shape> FlattenedParameters(const HloInstruction* instr) {
+  std::vector<Shape> parameters;
+  for (auto* operand : instr->operands()) {
+    for (auto& indexed : ShapeUtil::GetLeafShapes(operand->shape())) {
+      parameters.push_back(indexed.shape);
+    }
+  }
+  return parameters;
+}
+
+static std::vector<Shape> FlattenedResults(const HloInstruction* instr) {
+  std::vector<Shape> results;
+  for (auto& indexed : ShapeUtil::GetLeafShapes(instr->shape())) {
+    results.push_back(indexed.shape);
+  }
+  return results;
+}
+
+// Following struct types correspond to HostKernel C API.
+// See: xla/stream_executor/host/host_kernel_c_api.h
+
+static llvm::StructType* Dim3StructTy(llvm::LLVMContext& ctx,
+                                      std::string_view name) {
+  auto* i64 = llvm::IntegerType::getInt64Ty(ctx);
+  return llvm::StructType::create(name, i64, i64, i64);
+}
+
+static llvm::StructType* KernelThreadDimTy(llvm::LLVMContext& ctx) {
+  return Dim3StructTy(ctx, "SE_HOST_KernelThreadDim");
+}
+
+static llvm::StructType* KernelThreadTy(llvm::LLVMContext& ctx) {
+  return Dim3StructTy(ctx, "SE_HOST_KernelThread");
+}
+
+static llvm::StructType* KernelArgTy(llvm::LLVMContext& ctx) {
+  auto* ptr = llvm::PointerType::getUnqual(ctx);
+  auto* i64 = llvm::IntegerType::getInt64Ty(ctx);
+  return llvm::StructType::create("SE_HOST_KernelArg", ptr, i64);
+}
+
+static llvm::StructType* KernelCallFrameTy(llvm::LLVMContext& ctx) {
+  auto* ptr = llvm::PointerType::getUnqual(ctx);
+  auto* i64 = llvm::IntegerType::getInt64Ty(ctx);
+  return llvm::StructType::create("SE_HOST_KernelCallFrame", ptr, ptr, i64,
+                                  ptr);
+}
+
+static llvm::FunctionType* KernelFunctionTy(llvm::LLVMContext& ctx) {
+  return llvm::FunctionType::get(llvm::PointerType::getUnqual(ctx),
+                                 llvm::PointerType::getUnqual(ctx),
+                                 /*isVarArg=*/false);
+}
+
+}  // namespace
+
+//===----------------------------------------------------------------------===//
+// ElementalIrEmitter
+//===----------------------------------------------------------------------===//
+
+class IrEmitter2::ElementalIrEmitter : public xla::ElementalIrEmitter {
+ public:
+  ElementalIrEmitter(llvm::Module* module, llvm::IRBuilder<>* b,
+                     bool fast_min_max)
+      : xla::ElementalIrEmitter(module, b), fast_min_max_(fast_min_max) {}
+
+ protected:
+  absl::StatusOr<llvm::Value*> EmitAtan2(PrimitiveType prim_type,
+                                         llvm::Value* lhs, llvm::Value* rhs,
+                                         absl::string_view) override {
+    return xla::cpu::EmitAtan2(module(), *b(), prim_type, lhs, rhs);
+  }
+
+  absl::StatusOr<llvm::Value*> EmitTanh(PrimitiveType prim_type,
+                                        llvm::Value* value) override {
+    return xla::cpu::EmitTanh(module(), *b(), prim_type, value);
+  }
+
+  absl::StatusOr<llvm::Value*> EmitErf(PrimitiveType prim_type,
+                                       llvm::Value* value) override {
+    return xla::cpu::EmitErf(module(), *b(), prim_type, value);
+  }
+
+  absl::StatusOr<std::vector<llvm::Value*>> EmitThreadLocalCall(
+      const HloComputation& callee, absl::Span<llvm::Value* const> parameters,
+      absl::string_view name, bool is_reducer) override {
+    return absl::UnimplementedError("Not implemented");
+  }
+
+  bool fast_min_max() override { return fast_min_max_; }
+
+ private:
+  bool fast_min_max_;
+};
+
+//===----------------------------------------------------------------------===//
+// IrEmitter2
+//===----------------------------------------------------------------------===//
+
+IrEmitter2::IrEmitter2(llvm::Module* module)
+    : module_(module),
+      call_frame_ty_(KernelCallFrameTy(module_->getContext())),
+      thread_dims_ty_(KernelThreadDimTy(module_->getContext())),
+      thread_ty_(KernelThreadTy(module_->getContext())),
+      arg_ty_(KernelArgTy(module_->getContext())) {}
+
+absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitElementalHostKernel(
+    const HloInstruction* instr) {
+  llvm::IRBuilder<> b(module_->getContext());
+
+  std::vector<Shape> parameters = FlattenedParameters(instr);
+  std::vector<Shape> results = FlattenedResults(instr);
+
+  KernelPrototype kernel_prototype =
+      EmitKernelPrototype(instr->name(), parameters, results);
+  b.SetInsertPoint(kernel_prototype.function->getEntryBlock().getTerminator());
+
+  ElementalIrEmitter::HloToElementGeneratorMap operand_to_generator;
+  for (const HloInstruction* operand : instr->operands()) {
+    operand_to_generator[operand] = [&](const llvm_ir::IrArray::Index& index) {
+      return kernel_prototype.arguments[0].EmitReadArrayElement(index, &b);
+    };
+  }
+
+  // TODO(ezhulenev): Get `fast_min_max` from the HLO module config.
+  ElementalIrEmitter elemental_emitter(module_, &b, /*fast_min_max_=*/true);
+  auto element_generator =
+      elemental_emitter.MakeElementGenerator(instr, operand_to_generator);
+
+  TF_RETURN_IF_ERROR(
+      llvm_ir::LoopEmitter(element_generator, kernel_prototype.results[0], &b)
+          .EmitLoop(llvm_ir::IrName(instr)));
+
+  return KernelInfo{kernel_prototype.function->getName().str()};
+}
+
+//===----------------------------------------------------------------------===//
+// Building HostKernel prototypes.
+//===----------------------------------------------------------------------===//
+
+IrEmitter2::KernelThreadDims IrEmitter2::EmitKernelThreadDims(
+    llvm::IRBuilder<>& b, llvm::Value* call_frame) {
+  auto* thread_dims = b.CreateConstGEP2_64(call_frame_ty_, call_frame, 0, 0);
+  auto* x_ptr = b.CreateConstGEP2_32(thread_dims_ty_, thread_dims, 0, 0);
+  auto* y_ptr = b.CreateConstGEP2_32(thread_dims_ty_, thread_dims, 0, 1);
+  auto* z_ptr = b.CreateConstGEP2_32(thread_dims_ty_, thread_dims, 0, 2);
+
+  return {b.CreateLoad(b.getInt64Ty(), x_ptr),
+          b.CreateLoad(b.getInt64Ty(), y_ptr),
+          b.CreateLoad(b.getInt64Ty(), z_ptr)};
+}
+
+IrEmitter2::KernelThread IrEmitter2::EmitKernelThread(llvm::IRBuilder<>& b,
+                                                      llvm::Value* call_frame) {
+  auto* thread_dims = b.CreateConstGEP2_64(call_frame_ty_, call_frame, 0, 1);
+  auto* x_ptr = b.CreateConstGEP2_32(thread_ty_, thread_dims, 0, 0);
+  auto* y_ptr = b.CreateConstGEP2_32(thread_ty_, thread_dims, 0, 1);
+  auto* z_ptr = b.CreateConstGEP2_32(thread_ty_, thread_dims, 0, 2);
+
+  return {b.CreateLoad(b.getInt64Ty(), x_ptr),
+          b.CreateLoad(b.getInt64Ty(), y_ptr),
+          b.CreateLoad(b.getInt64Ty(), z_ptr)};
+}
+
+llvm_ir::IrArray IrEmitter2::EmitKernelArgument(llvm::IRBuilder<>& b,
+                                                llvm::Value* call_frame,
+                                                int64_t index,
+                                                const Shape& shape) {
+  auto* args_ptr = b.CreateConstGEP2_64(call_frame_ty_, call_frame, 0, 3);
+  auto* arg_ptr = b.CreateConstGEP1_64(arg_ty_, args_ptr, index);
+  auto* data_ptr = b.CreateConstGEP2_64(arg_ty_, arg_ptr, 0, 0);
+
+  llvm::Type* ptr = llvm::PointerType::get(b.getContext(), 0);
+  return llvm_ir::IrArray(b.CreateLoad(ptr, data_ptr),
+                          llvm_ir::ShapeToIrType(shape, module_), shape);
+}
+
+IrEmitter2::KernelPrototype IrEmitter2::EmitKernelPrototype(
+    std::string_view name, absl::Span<const Shape> arguments,
+    absl::Span<const Shape> results) {
+  VLOG(3) << "Build kernel prototype for: " << name << " with "
+          << arguments.size() << " arguments and " << results.size()
+          << " results:";
+  for (auto& argument : arguments) {
+    VLOG(3) << "  arguments: " << argument.ToString(true);
+  }
+  for (auto& result : results) {
+    VLOG(3) << "  result: " << result.ToString(true);
+  }
+
+  llvm::LLVMContext& ctx = module_->getContext();
+  llvm::IRBuilder<> b(ctx);
+
+  // Create a kernel function with HostKernel API.
+  llvm::Function* function = llvm::dyn_cast<llvm::Function>(
+      module_->getOrInsertFunction(name, KernelFunctionTy(ctx)).getCallee());
+  function->setCallingConv(llvm::CallingConv::C);
+  b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "", function));
+
+  llvm::Value* call_frame = function->getArg(0);
+
+  // Build thread coordinates from the call frame.
+  KernelThreadDims kernel_thread_dims = EmitKernelThreadDims(b, call_frame);
+  KernelThread kernel_thread = EmitKernelThread(b, call_frame);
+
+  int64_t idx = 0;
+
+  // IrArrays for the parameters.
+  std::vector<llvm_ir::IrArray> ir_arguments;
+  for (const Shape& argument : arguments) {
+    ir_arguments.push_back(EmitKernelArgument(b, call_frame, idx++, argument));
+  }
+
+  // IrArrays for the results.
+  std::vector<llvm_ir::IrArray> ir_results;
+  for (const Shape& result : results) {
+    ir_results.push_back(EmitKernelArgument(b, call_frame, idx++, result));
+  }
+
+  // Return null pointer to signal success as we do not support error handling
+  // in the compiled host kernel.
+  b.CreateRet(
+      llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx)));
+
+  return KernelPrototype{function, kernel_thread_dims, kernel_thread,
+                         std::move(ir_arguments), std::move(ir_results)};
+}
+
+}  // namespace xla::cpu

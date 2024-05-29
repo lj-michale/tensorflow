@@ -220,6 +220,7 @@ cc_library(
         "//xla/service:interpreter_plugin",  # reference backend
         "//xla/service:platform_util",
         "//xla/stream_executor",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/types:span",
@@ -373,6 +374,7 @@ cc_library(
         "//xla/service:transfer_manager",
         "//xla/stream_executor",
         "//xla/stream_executor:device_memory_allocator",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@eigen_archive//:eigen3",
@@ -414,6 +416,7 @@ xla_test(
         "//xla/hlo/ir:hlo",
         "//xla/service:backend",
         "//xla/service:executable",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@local_tsl//tsl/lib/core:status_test_util",
     ],
 )
@@ -538,6 +541,7 @@ xla_test(
         "//xla/client:xla_computation",
         "//xla/client/lib:arithmetic",
         "//xla/service:platform_util",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:test",
@@ -553,7 +557,7 @@ xla_test(
         "cpu",
         "gpu",
     ],
-    tags = ["no_aarch64"],
+    tags = ["not_run:arm"],
     deps = [
         ":client_library_test_base",
         ":test_macros_header",
@@ -922,6 +926,7 @@ xla_test(
         "//xla/client/lib:arithmetic",
         "//xla/client/lib:matrix",
         "//xla/service:hlo_parser",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
@@ -959,6 +964,7 @@ xla_test(
         "//xla/client/lib:arithmetic",
         "//xla/client/lib:matrix",
         "//xla/service:hlo_parser",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
@@ -1001,6 +1007,7 @@ xla_test(
         "//xla/client/lib:arithmetic",
         "//xla/client/lib:matrix",
         "//xla/service:hlo_parser",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
@@ -1077,6 +1084,7 @@ xla_test(
         "//xla/client/lib:arithmetic",
         "//xla/client/lib:matrix",
         "//xla/service:hlo_parser",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
@@ -1533,6 +1541,7 @@ xla_test(
         "//xla/service:transfer_manager",
         "//xla/stream_executor",
         "//xla/stream_executor:device_memory_allocator",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
     ],
@@ -2401,13 +2410,15 @@ xla_test(
     ],
 )
 
-xla_cc_test(
+xla_test(
     name = "llvm_compiler_test",
     srcs = ["llvm_compiler_test.cc"],
+    backends = ["gpu"],
     local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]) + if_rocm_is_configured([
         "TENSORFLOW_USE_ROCM",
     ]),
-    use_gpu = True,
+    # TODO(b/317293391) Remove once Bazel test_suite handles tags correctly
+    tags = ["gpu"],
     deps = if_gpu_is_configured([
         ":verified_hlo_module",
         "//xla:literal_util",
@@ -2416,7 +2427,6 @@ xla_cc_test(
         "@com_google_absl//absl/status",
         "//xla/service:backend",
         "//xla/service:cpu_plugin",
-        "//xla/service:gpu_plugin",
         "//xla/service:llvm_compiler",
         "//xla/service:platform_util",
         "//xla/service/cpu:cpu_compiler",
@@ -2475,6 +2485,7 @@ xla_test(
         "//xla/client:xla_builder",
         "//xla/hlo/ir:hlo",
         "//xla/service:platform_util",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/types:span",
         "@eigen_archive//:eigen3",
         "@local_tsl//tsl/platform:logging",
@@ -2516,7 +2527,7 @@ xla_cc_test(
         ":local_client_aot_test_computation.o",
     ],
     linkstatic = 1,
-    tags = ["no_aarch64"],  # b/341355246
+    tags = ["not_run:arm"],  # b/341355246
     deps = [
         "//xla:executable_run_options",
         "@com_google_absl//absl/base:dynamic_annotations",
@@ -2572,6 +2583,7 @@ xla_test(
         "//xla/stream_executor",
         "//xla/stream_executor:device_memory_allocator",
         "//xla/stream_executor:platform_manager",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "//xla/stream_executor/host:host_platform",
         "//xla/stream_executor/host:host_platform_id",
         "@local_tsl//tsl/platform:env",
@@ -2722,17 +2734,16 @@ xla_test(
 )
 
 # A demo of test that loads an hlo module from a file and compares results on gpu and cpu.
-xla_cc_test(
+xla_test(
     name = "sample_file_test",
     srcs = ["sample_file_test.cc"],
+    backends = ["gpu"],
     data = ["isolated_convolution.hlo"],
-    use_gpu = True,
     deps = [
         ":hlo_test_base",
         ":xla_internal_test_main",  # fixdeps: keep
         "//xla:test",
         "//xla/service:cpu_plugin",  # reference backend
-        "//xla/service:gpu_plugin",  # test backend
         "//xla/service:platform_util",
         "@local_tsl//tsl/platform:path",
         "@local_tsl//tsl/platform:test",

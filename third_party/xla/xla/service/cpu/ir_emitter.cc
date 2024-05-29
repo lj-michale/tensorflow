@@ -64,11 +64,12 @@ limitations under the License.
 #include "xla/service/cpu/cpu_options.h"
 #include "xla/service/cpu/cpu_runtime.h"
 #include "xla/service/cpu/dot_op_emitter.h"
-#include "xla/service/cpu/elemental_ir_emitter.h"
+#include "xla/service/cpu/elemental_math_emitter.h"
 #include "xla/service/cpu/ir_emission_utils.h"
 #include "xla/service/cpu/ir_function.h"
 #include "xla/service/cpu/parallel_loop_emitter.h"
 #include "xla/service/elemental_ir_emitter.h"
+#include "xla/service/hlo_module_config.h"
 #include "xla/service/llvm_ir/buffer_assignment_util.h"
 #include "xla/service/llvm_ir/dynamic_update_slice_util.h"
 #include "xla/service/llvm_ir/ir_array.h"
@@ -95,9 +96,50 @@ namespace xla {
 namespace {
 using llvm_ir::IrName;
 using llvm_ir::SetToFirstInsertPoint;
+
 }  // namespace
 
 namespace cpu {
+
+class IrEmitter::CpuElementalIrEmitter : public ElementalIrEmitter {
+ public:
+  CpuElementalIrEmitter(const HloModuleConfig& module_config,
+                        IrEmitter* ir_emitter, llvm::Module* module)
+      : ElementalIrEmitter(module, ir_emitter->b()),
+        hlo_module_config_(module_config),
+        ir_emitter_(ir_emitter) {}
+
+ protected:
+  absl::StatusOr<llvm::Value*> EmitAtan2(PrimitiveType prim_type,
+                                         llvm::Value* lhs, llvm::Value* rhs,
+                                         absl::string_view) override {
+    return xla::cpu::EmitAtan2(module(), *b(), prim_type, lhs, rhs);
+  }
+
+  absl::StatusOr<llvm::Value*> EmitTanh(PrimitiveType prim_type,
+                                        llvm::Value* value) override {
+    return xla::cpu::EmitTanh(module(), *b(), prim_type, value);
+  }
+
+  absl::StatusOr<llvm::Value*> EmitErf(PrimitiveType prim_type,
+                                       llvm::Value* value) override {
+    return xla::cpu::EmitErf(module(), *b(), prim_type, value);
+  }
+
+  absl::StatusOr<std::vector<llvm::Value*>> EmitThreadLocalCall(
+      const HloComputation& callee, absl::Span<llvm::Value* const> parameters,
+      absl::string_view name, bool is_reducer) override {
+    return ir_emitter_->EmitThreadLocalCall(callee, parameters, name,
+                                            is_reducer);
+  }
+
+  bool fast_min_max() override {
+    return hlo_module_config_.debug_options().xla_cpu_enable_fast_min_max();
+  }
+
+  const HloModuleConfig& hlo_module_config_;
+  IrEmitter* ir_emitter_;
+};
 
 IrEmitter::IrEmitter(mlir::MLIRContext* mlir_context,
                      const HloModule& hlo_module,
@@ -3518,11 +3560,10 @@ void IrEmitter::TracingState::EmitTracingStart(llvm::IRBuilder<>* b,
   }
 
   llvm::Type* void_ptr_type = b->getPtrTy();
-  llvm::FunctionType* fn_type =
-      llvm::FunctionType::get(b->getInt64Ty(),
-                              {void_ptr_type, void_ptr_type, void_ptr_type,
-                               void_ptr_type, void_ptr_type},
-                              /*isVarArg=*/false);
+  llvm::FunctionType* fn_type = llvm::FunctionType::get(
+      b->getInt64Ty(),
+      {void_ptr_type, void_ptr_type, void_ptr_type, b->getInt64Ty()},
+      /*isVarArg=*/false);
 
   llvm::Function* function = b->GetInsertBlock()->getParent();
   llvm::Module* module = function->getParent();
@@ -3535,24 +3576,11 @@ void IrEmitter::TracingState::EmitTracingStart(llvm::IRBuilder<>* b,
     fn->setOnlyAccessesArgMemory();
   }
 
-  // Pass opcode as argument to TraceMe call
-  absl::string_view hlo_type_str;
-  if (hlo->opcode() == HloOpcode::kCustomCall) {
-    // For custom call, passing custom call target is more informative
-    hlo_type_str = hlo->custom_call_target();
-  } else {
-    hlo_type_str = HloOpcodeString(hlo->opcode());
-  }
-  auto* hlo_type = b->CreateGlobalStringPtr(hlo_type_str);
   auto* hlo_name = b->CreateGlobalStringPtr(hlo->name());
-
-  // Also pass metadata, as it can be useful for debugging
-  auto* hlo_src_op_type = b->CreateGlobalStringPtr(hlo->metadata().op_type());
-  auto* hlo_src_op_name = b->CreateGlobalStringPtr(hlo->metadata().op_name());
-
+  auto* hlo_module = b->CreateGlobalStringPtr(hlo->GetModule()->name());
+  auto* hlo_module_id = b->getInt64(hlo->GetModule()->unique_id());
   auto* activity_id = b->CreateCall(
-      trace_func,
-      {run_options, hlo_name, hlo_type, hlo_src_op_type, hlo_src_op_name});
+      trace_func, {run_options, hlo_name, hlo_module, hlo_module_id});
   activity_id->setName(IrName(hlo, "activity_id"));
   activity_ids_[hlo] = activity_id;
 }

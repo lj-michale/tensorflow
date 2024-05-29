@@ -47,10 +47,6 @@ limitations under the License.
 
 namespace stream_executor {
 
-namespace internal {
-class StreamInterface;
-}  // namespace internal
-
 class DeviceMemoryBase;
 template <typename ElemT>
 class DeviceMemory;
@@ -79,13 +75,12 @@ class Stream {
   // Instantiate a stream tied to parent as a platform executor. Work
   // entrained onto this stream will be launched/managed on that
   // StreamExecutor's platform.
-  explicit Stream(StreamExecutor *parent,
-                  std::unique_ptr<StreamInterface> implementation);
+  explicit Stream(StreamExecutor *parent);
 
   // Deallocates any stream resources that the parent StreamExecutor has
   // bestowed
   // upon this object.
-  ~Stream();
+  virtual ~Stream() = default;
 
   // TODO(ezhulenev): Consider removing this platform-specific accessor and
   // forward all users to platform-specific headers, however it requires careful
@@ -236,10 +231,6 @@ class Stream {
   // Otherwise returns an error describing why the blocking failed.
   absl::Status BlockHostUntilDone() TF_LOCKS_EXCLUDED(mu_);
 
-  // Returns the (opaque) platform-specific backing object. Ownership is not
-  // transferred to the caller.
-  StreamInterface *implementation() { return implementation_.get(); }
-
   // Entrains onto the stream a callback to the host (from the device).
   // Behaves as DoHostCallbackWithStatus below, but the callback should
   // never fail or its failure is inconsequential.
@@ -274,7 +265,16 @@ class Stream {
     return parent()->GetDeviceDescription().rocm_compute_capability();
   }
 
-  std::variant<StreamPriority, int> priority() const;
+  // Gets priority for a stream.
+  virtual std::variant<StreamPriority, int> priority() const {
+    return StreamPriority::Default;
+  }
+
+  // Returns a pointer to a platform specific stream associated with this object
+  // if it exists, or nullptr otherwise. This is available via Stream public API
+  // as Stream::PlatformSpecificHandle, and should not be accessed directly
+  // outside of a StreamExecutor package.
+  virtual void *platform_specific_stream() const { return nullptr; }
 
  private:
   bool InErrorState() const TF_LOCKS_EXCLUDED(mu_) {
@@ -293,10 +293,6 @@ class Stream {
 
   // The StreamExecutor that supports the operation of this stream.
   StreamExecutor *parent_;
-
-  // The platform-dependent implementation that the StreamExecutor interface
-  // delegates to.
-  std::unique_ptr<StreamInterface> implementation_;
 
   // mutex that guards the allocation / error state flags.
   // Mutable so that it can be obtained via const reader lock.

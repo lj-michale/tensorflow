@@ -31,7 +31,6 @@ limitations under the License.
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/event.h"
-#include "xla/stream_executor/event_interface.h"
 #include "xla/stream_executor/host/host_stream.h"
 #include "xla/stream_executor/host_memory_allocation.h"
 #include "xla/stream_executor/kernel.h"
@@ -122,10 +121,6 @@ class XlaInterpreterExecutor : public StreamExecutor {
     return absl::Status{absl::StatusCode::kUnimplemented, "WaitForEvent"};
   }
 
-  Event::Status PollForEventStatus(Event *event) override {
-    return Event::Status::kError;
-  }
-
   void DeallocateStream(Stream *stream) override {}
   bool CreateStreamDependency(Stream *dependent, Stream *other) override;
 
@@ -151,15 +146,13 @@ class XlaInterpreterExecutor : public StreamExecutor {
     return true;
   }
   absl::StatusOr<std::unique_ptr<Event>> CreateEvent() override {
-    return std::make_unique<Event>(this, nullptr);
+    return std::make_unique<Event>();
   }
 
   absl::StatusOr<std::unique_ptr<Stream>> CreateStream(
       std::optional<std::variant<StreamPriority, int>> priority =
           std::nullopt) override {
-    auto stream =
-        std::make_unique<Stream>(this, std::make_unique<host::HostStream>());
-    return std::move(stream);
+    return std::make_unique<host::HostStream>(this);
   }
 
  private:

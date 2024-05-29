@@ -36,7 +36,6 @@ limitations under the License.
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/event.h"
-#include "xla/stream_executor/event_interface.h"
 #include "xla/stream_executor/host/host_kernel.h"
 #include "xla/stream_executor/host/host_stream.h"
 #include "xla/stream_executor/kernel_spec.h"
@@ -52,7 +51,7 @@ namespace host {
 
 HostStream* AsHostStream(Stream* stream) {
   DCHECK(stream != nullptr);
-  return dynamic_cast<HostStream*>(stream->implementation());
+  return dynamic_cast<HostStream*>(stream);
 }
 
 static std::vector<HostExecutor::KernelFunctionLoader>&
@@ -222,11 +221,16 @@ bool HostExecutor::CreateStreamDependency(Stream* dependent, Stream* other) {
   return true;
 }
 
-class HostEvent : public EventInterface {
+class HostEvent : public Event {
  public:
   HostEvent() : notification_(std::make_shared<absl::Notification>()) {}
 
   std::shared_ptr<absl::Notification>& notification() { return notification_; }
+
+  Status PollForStatus() override {
+    return notification_->HasBeenNotified() ? Event::Status::kComplete
+                                            : Event::Status::kPending;
+  }
 
  private:
   // We use a std::shared_ptr here because the client may delete the HostEvent
@@ -236,12 +240,12 @@ class HostEvent : public EventInterface {
 };
 
 absl::StatusOr<std::unique_ptr<Event>> HostExecutor::CreateEvent() {
-  return std::make_unique<Event>(this, std::make_unique<HostEvent>());
+  return std::make_unique<HostEvent>();
 }
 
 static HostEvent* AsHostEvent(Event* event) {
   DCHECK(event != nullptr);
-  return static_cast<HostEvent*>(event->implementation());
+  return static_cast<HostEvent*>(event);
 }
 
 absl::Status HostExecutor::RecordEvent(Stream* stream, Event* event) {
@@ -260,12 +264,6 @@ absl::Status HostExecutor::WaitForEvent(Stream* stream, Event* event) {
   AsHostStream(stream)->EnqueueTask(
       [notification]() { notification->WaitForNotification(); });
   return absl::OkStatus();
-}
-
-Event::Status HostExecutor::PollForEventStatus(Event* event) {
-  absl::Notification& notification = *AsHostEvent(event)->notification();
-  return notification.HasBeenNotified() ? Event::Status::kComplete
-                                        : Event::Status::kPending;
 }
 
 absl::Status HostExecutor::BlockHostUntilDone(Stream* stream) {
@@ -294,7 +292,7 @@ HostExecutor::CreateDeviceDescription(int device_ordinal) {
 
 absl::StatusOr<std::unique_ptr<Stream>> HostExecutor::CreateStream(
     std::optional<std::variant<StreamPriority, int>> priority) {
-  return std::make_unique<Stream>(this, std::make_unique<HostStream>());
+  return std::make_unique<HostStream>(this);
 }
 
 }  // namespace host
