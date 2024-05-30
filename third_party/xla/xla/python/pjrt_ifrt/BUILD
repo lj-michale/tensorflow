@@ -176,7 +176,6 @@ xla_cc_test(
         "//xla/python/ifrt:tuple_impl_test_lib",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
-        "@llvm-project//llvm:Support",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:status_matchers",
         "@local_tsl//tsl/platform:statusor",
@@ -213,7 +212,6 @@ cc_library(
         ":xla_ifrt",
         "//xla:literal",
         "//xla:shape_util",
-        "//xla:status",
         "//xla:status_macros",
         "//xla:statusor",
         "//xla:util",
@@ -272,7 +270,6 @@ cc_library(
     hdrs = ["basic_string_array.h"],
     compatible_with = get_compatible_with_portable(),
     deps = [
-        "//xla:status",
         "//xla:xla_data_proto_cc",
         "//xla/pjrt:pjrt_layout",
         "//xla/python/ifrt",

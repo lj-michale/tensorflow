@@ -16,13 +16,16 @@ limitations under the License.
 #include "xla/service/cpu/ir_emitter2.h"
 
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -31,8 +34,11 @@ limitations under the License.
 #include "llvm/IR/Value.h"
 #include "llvm/Support/Casting.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_instructions.h"
+#include "xla/hlo/ir/hlo_module.h"
 #include "xla/service/cpu/elemental_math_emitter.h"
 #include "xla/service/elemental_ir_emitter.h"
+#include "xla/service/llvm_ir/fused_ir_emitter.h"
 #include "xla/service/llvm_ir/ir_array.h"
 #include "xla/service/llvm_ir/llvm_util.h"
 #include "xla/service/llvm_ir/loop_emitter.h"
@@ -40,6 +46,7 @@ limitations under the License.
 #include "xla/shape_util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla::cpu {
 namespace {
@@ -147,41 +154,79 @@ class IrEmitter2::ElementalIrEmitter : public xla::ElementalIrEmitter {
 // IrEmitter2
 //===----------------------------------------------------------------------===//
 
-IrEmitter2::IrEmitter2(llvm::Module* module)
-    : module_(module),
+IrEmitter2::IrEmitter2(const HloModule& hlo_module, llvm::Module* module)
+    : hlo_module_(hlo_module),
+      module_(module),
       call_frame_ty_(KernelCallFrameTy(module_->getContext())),
       thread_dims_ty_(KernelThreadDimTy(module_->getContext())),
       thread_ty_(KernelThreadTy(module_->getContext())),
       arg_ty_(KernelArgTy(module_->getContext())) {}
 
+bool IrEmitter2::fast_min_max() const {
+  return hlo_module_.config().debug_options().xla_cpu_enable_fast_min_max();
+}
+
 absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitElementalHostKernel(
     const HloInstruction* instr) {
+  KernelPrototype kernel_prototype = EmitKernelPrototype(instr);
+
   llvm::IRBuilder<> b(module_->getContext());
-
-  std::vector<Shape> parameters = FlattenedParameters(instr);
-  std::vector<Shape> results = FlattenedResults(instr);
-
-  KernelPrototype kernel_prototype =
-      EmitKernelPrototype(instr->name(), parameters, results);
   b.SetInsertPoint(kernel_prototype.function->getEntryBlock().getTerminator());
 
   ElementalIrEmitter::HloToElementGeneratorMap operand_to_generator;
-  for (const HloInstruction* operand : instr->operands()) {
-    operand_to_generator[operand] = [&](const llvm_ir::IrArray::Index& index) {
-      return kernel_prototype.arguments[0].EmitReadArrayElement(index, &b);
+  for (int64_t i = 0; i < instr->operand_count(); ++i) {
+    const HloInstruction* operand = instr->operand(i);
+    operand_to_generator[operand] = [&, i](const llvm_ir::IrArray::Index& idx) {
+      return kernel_prototype.arguments[i].EmitReadArrayElement(idx, &b);
     };
   }
 
-  // TODO(ezhulenev): Get `fast_min_max` from the HLO module config.
-  ElementalIrEmitter elemental_emitter(module_, &b, /*fast_min_max_=*/true);
-  auto element_generator =
+  if (kernel_prototype.results.size() > 1) {
+    return absl::InternalError("Multi-output host kernels are not supported");
+  }
+
+  ElementalIrEmitter elemental_emitter(module_, &b, fast_min_max());
+  llvm_ir::ElementGenerator element_generator =
       elemental_emitter.MakeElementGenerator(instr, operand_to_generator);
 
   TF_RETURN_IF_ERROR(
       llvm_ir::LoopEmitter(element_generator, kernel_prototype.results[0], &b)
           .EmitLoop(llvm_ir::IrName(instr)));
 
-  return KernelInfo{kernel_prototype.function->getName().str()};
+  return kernels_.emplace_back(kernel_prototype.function->getName().str());
+}
+
+absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitFusionHostKernel(
+    const HloFusionInstruction* fusion) {
+  if (fusion->fusion_kind() != HloInstruction::FusionKind::kLoop) {
+    return absl::InternalError(absl::StrCat(
+        "Unsupported loop fusion kind for instruction: ", fusion->ToString()));
+  }
+
+  KernelPrototype kernel_prototype = EmitKernelPrototype(fusion);
+
+  llvm::IRBuilder<> b(module_->getContext());
+  b.SetInsertPoint(kernel_prototype.function->getEntryBlock().getTerminator());
+
+  ElementalIrEmitter elemental_emitter(module_, &b, fast_min_max());
+  FusedIrEmitter fused_emitter(elemental_emitter);
+
+  for (int i = 0; i < fusion->operand_count(); i++) {
+    fused_emitter.BindGenerator(
+        *fusion->fused_parameter(i), [&, i](llvm_ir::IrArray::Index idx) {
+          return kernel_prototype.arguments[i].EmitReadArrayElement(idx, &b);
+        });
+  }
+
+  TF_ASSIGN_OR_RETURN(
+      auto element_generator,
+      fused_emitter.GetGenerator(*fusion->fused_expression_root()));
+
+  TF_RETURN_IF_ERROR(
+      llvm_ir::LoopEmitter(element_generator, kernel_prototype.results[0], &b)
+          .EmitLoop(llvm_ir::IrName(fusion)));
+
+  return kernels_.emplace_back(kernel_prototype.function->getName().str());
 }
 
 //===----------------------------------------------------------------------===//
@@ -190,39 +235,41 @@ absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitElementalHostKernel(
 
 IrEmitter2::KernelThreadDims IrEmitter2::EmitKernelThreadDims(
     llvm::IRBuilder<>& b, llvm::Value* call_frame) {
-  auto* thread_dims = b.CreateConstGEP2_64(call_frame_ty_, call_frame, 0, 0);
-  auto* x_ptr = b.CreateConstGEP2_32(thread_dims_ty_, thread_dims, 0, 0);
-  auto* y_ptr = b.CreateConstGEP2_32(thread_dims_ty_, thread_dims, 0, 1);
-  auto* z_ptr = b.CreateConstGEP2_32(thread_dims_ty_, thread_dims, 0, 2);
+  auto* tdims = b.CreateStructGEP(call_frame_ty_, call_frame, 0, "tdims_gep");
+  auto* x_gep = b.CreateStructGEP(thread_dims_ty_, tdims, 0, "tdim_x_gep");
+  auto* y_gep = b.CreateStructGEP(thread_dims_ty_, tdims, 1, "tdim_y_gep");
+  auto* z_gep = b.CreateStructGEP(thread_dims_ty_, tdims, 2, "tdim_z_gep");
 
-  return {b.CreateLoad(b.getInt64Ty(), x_ptr),
-          b.CreateLoad(b.getInt64Ty(), y_ptr),
-          b.CreateLoad(b.getInt64Ty(), z_ptr)};
+  return {b.CreateLoad(b.getInt64Ty(), x_gep, "tdim_x"),
+          b.CreateLoad(b.getInt64Ty(), y_gep, "tdim_y"),
+          b.CreateLoad(b.getInt64Ty(), z_gep, "tdim_z")};
 }
 
 IrEmitter2::KernelThread IrEmitter2::EmitKernelThread(llvm::IRBuilder<>& b,
                                                       llvm::Value* call_frame) {
-  auto* thread_dims = b.CreateConstGEP2_64(call_frame_ty_, call_frame, 0, 1);
-  auto* x_ptr = b.CreateConstGEP2_32(thread_ty_, thread_dims, 0, 0);
-  auto* y_ptr = b.CreateConstGEP2_32(thread_ty_, thread_dims, 0, 1);
-  auto* z_ptr = b.CreateConstGEP2_32(thread_ty_, thread_dims, 0, 2);
+  auto* tids = b.CreateStructGEP(call_frame_ty_, call_frame, 1, "tid_gep");
+  auto* x_gep = b.CreateStructGEP(thread_ty_, tids, 0, "tid_x_gep");
+  auto* y_gep = b.CreateStructGEP(thread_ty_, tids, 1, "tid_y_gep");
+  auto* z_gep = b.CreateStructGEP(thread_ty_, tids, 2, "tid_z_gep");
 
-  return {b.CreateLoad(b.getInt64Ty(), x_ptr),
-          b.CreateLoad(b.getInt64Ty(), y_ptr),
-          b.CreateLoad(b.getInt64Ty(), z_ptr)};
+  return {b.CreateLoad(b.getInt64Ty(), x_gep, "tid_x"),
+          b.CreateLoad(b.getInt64Ty(), y_gep, "tid_y"),
+          b.CreateLoad(b.getInt64Ty(), z_gep, "tid_z")};
 }
 
 llvm_ir::IrArray IrEmitter2::EmitKernelArgument(llvm::IRBuilder<>& b,
                                                 llvm::Value* call_frame,
                                                 int64_t index,
                                                 const Shape& shape) {
-  auto* args_ptr = b.CreateConstGEP2_64(call_frame_ty_, call_frame, 0, 3);
-  auto* arg_ptr = b.CreateConstGEP1_64(arg_ty_, args_ptr, index);
-  auto* data_ptr = b.CreateConstGEP2_64(arg_ty_, arg_ptr, 0, 0);
-
   llvm::Type* ptr = llvm::PointerType::get(b.getContext(), 0);
-  return llvm_ir::IrArray(b.CreateLoad(ptr, data_ptr),
-                          llvm_ir::ShapeToIrType(shape, module_), shape);
+  std::string name = absl::StrCat("arg", index);
+
+  auto* args_gep = b.CreateStructGEP(call_frame_ty_, call_frame, 3, "args_gep");
+  auto* args = b.CreateLoad(ptr, args_gep, "args");
+  auto* data_gep = b.CreateConstGEP2_32(arg_ty_, args, index, 0, name + "_gep");
+  auto* data = b.CreateLoad(ptr, data_gep, name);
+
+  return llvm_ir::IrArray(data, llvm_ir::ShapeToIrType(shape, module_), shape);
 }
 
 IrEmitter2::KernelPrototype IrEmitter2::EmitKernelPrototype(
@@ -245,10 +292,12 @@ IrEmitter2::KernelPrototype IrEmitter2::EmitKernelPrototype(
   llvm::Function* function = llvm::dyn_cast<llvm::Function>(
       module_->getOrInsertFunction(name, KernelFunctionTy(ctx)).getCallee());
   function->setCallingConv(llvm::CallingConv::C);
+  function->setDoesNotThrow();
+
+  // Create an entry basic block and set insert point to the end of it.
   b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "", function));
 
   llvm::Value* call_frame = function->getArg(0);
-
   // Build thread coordinates from the call frame.
   KernelThreadDims kernel_thread_dims = EmitKernelThreadDims(b, call_frame);
   KernelThread kernel_thread = EmitKernelThread(b, call_frame);
@@ -274,6 +323,12 @@ IrEmitter2::KernelPrototype IrEmitter2::EmitKernelPrototype(
 
   return KernelPrototype{function, kernel_thread_dims, kernel_thread,
                          std::move(ir_arguments), std::move(ir_results)};
+}
+
+IrEmitter2::KernelPrototype IrEmitter2::EmitKernelPrototype(
+    const HloInstruction* instr) {
+  return EmitKernelPrototype(instr->name(), FlattenedParameters(instr),
+                             FlattenedResults(instr));
 }
 
 }  // namespace xla::cpu

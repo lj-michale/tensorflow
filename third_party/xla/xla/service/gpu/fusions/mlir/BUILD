@@ -279,6 +279,7 @@ cc_library(
     name = "passes",
     srcs = [
         "convert_xla_gpu_pure_call_ops.cc",
+        "erase_dead_functions.cc",
         "expand_float_ops.cc",
         "lower_tensors.cc",
         "lower_to_llvm.cc",
@@ -287,6 +288,7 @@ cc_library(
         "propagate_slice_indices.cc",
         "simplify_affine.cc",
         "simplify_arith.cc",
+        "unswitch_loops.cc",
     ],
     hdrs = ["passes.h"],
     deps = [
@@ -311,6 +313,7 @@ cc_library(
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:ArithToLLVM",
         "@llvm-project//mlir:ArithTransforms",
+        "@llvm-project//mlir:CallOpInterfaces",
         "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:ComplexToLLVM",
         "@llvm-project//mlir:ControlFlowToLLVM",

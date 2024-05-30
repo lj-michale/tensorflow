@@ -19,6 +19,7 @@ limitations under the License.
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/status/statusor.h"
@@ -27,6 +28,7 @@ limitations under the License.
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/llvm_ir/ir_array.h"
 #include "xla/shape.h"
 
@@ -52,7 +54,7 @@ namespace xla::cpu {
 // WARNING: This is under construction and will eventually replace IrEmitter.
 class IrEmitter2 {
  public:
-  explicit IrEmitter2(llvm::Module* module);
+  IrEmitter2(const HloModule& hlo_module, llvm::Module* module);
 
   // Thread dimensions of the kernel invocation.
   struct KernelThreadDims {
@@ -89,18 +91,29 @@ class IrEmitter2 {
   // TODO(ezhulenev): In addition to a symbol name we also need to know the
   // block and thread sizes.
   struct KernelInfo {
+    explicit KernelInfo(std::string name) : name(std::move(name)) {}
     std::string name;
   };
+
+  // Returns all the kernels emitted so far via this emitter.
+  absl::Span<const KernelInfo> kernels() const { return kernels_; }
 
   // Emits an elemental host kernel for the given HLO instruction.
   absl::StatusOr<KernelInfo> EmitElementalHostKernel(
       const HloInstruction* instr);
+
+  // Emits a host kernel for the given fusion instruction.
+  absl::StatusOr<KernelInfo> EmitFusionHostKernel(
+      const HloFusionInstruction* fusion);
 
   // Emits a host kernel prototype and prepares function for emitting kernel
   // body into it.
   KernelPrototype EmitKernelPrototype(std::string_view name,
                                       absl::Span<const Shape> arguments,
                                       absl::Span<const Shape> results);
+
+  // Emits a host kernel prototype for the given HLO instruction.
+  KernelPrototype EmitKernelPrototype(const HloInstruction* instr);
 
  private:
   class ElementalIrEmitter;
@@ -114,6 +127,9 @@ class IrEmitter2 {
                                       llvm::Value* call_frame, int64_t index,
                                       const Shape& shape);
 
+  bool fast_min_max() const;
+
+  const HloModule& hlo_module_;
   llvm::Module* module_;
 
   // LLVM types defining HostKernel API (see host_kernel_c_api.h).
@@ -121,6 +137,9 @@ class IrEmitter2 {
   llvm::StructType* thread_dims_ty_;
   llvm::StructType* thread_ty_;
   llvm::StructType* arg_ty_;
+
+  // Keeps track of all the kernels emitted so far.
+  std::vector<KernelInfo> kernels_;
 };
 
 }  // namespace xla::cpu

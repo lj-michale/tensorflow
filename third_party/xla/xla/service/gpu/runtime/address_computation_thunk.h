@@ -49,7 +49,7 @@ class AddressComputationThunk : public Thunk {
   // Dynamic slice offset can be either: (1) a statically known constant value,
   // (2) a loop iteration number, or (3) a truly dynamic offset that is
   // computed on device and have to be transferred to host.
-  using Offset = std::variant<int64_t, LoopIter, BufferAllocation::Slice>;
+  using Offset = std::variant<uint64_t, LoopIter, BufferAllocation::Slice>;
 
   AddressComputationThunk(
       ThunkInfo thunk_info, std::unique_ptr<ThunkSequence> embedded_thunk,
@@ -72,18 +72,31 @@ class AddressComputationThunk : public Thunk {
 
  private:
   std::unique_ptr<SequentialThunk> embedded_thunk_;
-  std::vector<std::optional<BufferAllocation::Slice>> embedded_thunk_arguments_;
   std::vector<std::unique_ptr<BufferAllocation>> fake_allocations_;
-  std::vector<std::optional<std::vector<Offset>>> offsets_;
-  std::vector<std::optional<Shape>> orig_shapes_;
-  std::vector<std::optional<Shape>> sliced_shapes_;
-  std::vector<std::optional<uint64_t>> offset_byte_sizes_;
+
+  // Definition of a dynamic slice that extract a slice from the original buffer
+  // defined by `embedded_thunk_argument` at given `offsets`.
+  struct SliceDef {
+    std::optional<BufferAllocation::Slice> embedded_thunk_argument;
+    std::optional<std::vector<Offset>> offsets;
+    std::optional<Shape> orig_shape;
+    std::optional<Shape> sliced_shape;
+    std::optional<uint64_t> offset_byte_size;
+  };
+
+  std::vector<SliceDef> slices_;
 
   // Pinned host memory for transferring offset values from device to host.
   absl::Mutex mutex_;
   absl::flat_hash_map<se::StreamExecutor*,
                       std::unique_ptr<se::MemoryAllocation>>
       offsets_allocs_ ABSL_GUARDED_BY(mutex_);
+
+  // Pre-computed size requirement for `offsets_allocs_`.
+  int64_t offsets_allocs_size_ = 0;
+
+  // A mapping from argument index to the base offset in the `offsets_allocs_`.
+  std::vector<int64_t> offsets_allocs_base_;
 };
 
 }  // namespace gpu
