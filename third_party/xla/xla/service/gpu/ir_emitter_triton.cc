@@ -122,9 +122,9 @@ limitations under the License.
 #include "xla/service/gpu/triton_fusion_analysis.h"
 #include "xla/service/gpu/triton_tiling_propagation.h"
 #include "xla/service/hlo_module_config.h"
+#include "xla/service/instruction_fusion.h"
 #include "xla/service/llvm_ir/llvm_util.h"
 #include "xla/shape_util.h"
-#include "xla/status.h"
 #include "xla/status_macros.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/launch_dim.h"
@@ -251,6 +251,11 @@ Value OnesLike(ImplicitLocOpBuilder& b, Value x) {
   return CreateConst(b, x.getType(), 1);
 }
 
+bool IsFp8Type(Type t) {
+  return t.isFloat8E5M2() || t.isFloat8E4M3FN() || t.isFloat8E5M2FNUZ() ||
+         t.isFloat8E4M3FNUZ() || t.isFloat8E4M3B11FNUZ();
+}
+
 // Triton type conversions.
 Value Cast(ImplicitLocOpBuilder& b, Value value, Type dst_element_ty) {
   Type src_ty = value.getType();
@@ -281,6 +286,14 @@ Value Cast(ImplicitLocOpBuilder& b, Value value, Type dst_element_ty) {
   auto src_fp_element_ty = mlir::dyn_cast<mlir::FloatType>(src_element_ty);
   auto dst_fp_element_ty = mlir::dyn_cast<mlir::FloatType>(dst_element_ty);
   if (src_fp_element_ty && dst_fp_element_ty) {
+    // F8 <-> FP16, BF16, FP32, FP64 need to be handled via Triton's tt.fp_to_fp
+    // because LLVM doesn't support casts from/to FP8.
+    // TODO(b/266862493): Add end-to-end test once FP8 support lands in XLA as
+    // we can't test the code below without patching the feature.
+    if (IsFp8Type(src_element_ty) || IsFp8Type(dst_element_ty)) {
+      return b.create<mt::FpToFpOp>(dst_ty, value);
+    }
+
     if (src_fp_element_ty.getFPMantissaWidth() >
         dst_fp_element_ty.getFPMantissaWidth()) {
       return b.create<ma::TruncFOp>(dst_ty, value);
@@ -2031,8 +2044,8 @@ absl::Status EmitMatMul(mlir::OpBuilder builder,
                         const se::DeviceDescription& device_info,
                         const TritonFusionAnalysis& analysis,
                         const HloComputation* computation,
-                        mlir::triton::FuncOp fn,
-                        const TritonGemmConfig& config) {
+                        mlir::triton::FuncOp fn, const TritonGemmConfig& config,
+                        const std::vector<int64_t>& output_tile_sizes) {
   TF_RETURN_IF_ERROR(CheckGemmTilingComplexityHeuristic(config));
 
   const HloInstruction* instr =
@@ -2446,16 +2459,49 @@ MakeTensorPtrOpAndBoundaryChecks CreateMakeTensorPtrOp(
 
 }  // namespace ir_emitter_triton_internal
 
-absl::Status EmitTiledSoftMax(mlir::OpBuilder builder,
-                              absl::string_view libdevice_path,
-                              const se::DeviceDescription& device_info,
-                              SymbolicTileAnalysis* analysis,
-                              const HloComputation* computation,
-                              mlir::triton::FuncOp fn) {
+absl::Status EmitGeneric(mlir::OpBuilder builder,
+                         absl::string_view libdevice_path,
+                         const se::DeviceDescription& device_info,
+                         const TritonFusionAnalysis&,
+                         const HloComputation* computation,
+                         mlir::triton::FuncOp fn, const TritonGemmConfig&,
+                         const std::vector<int64_t>& output_tile_sizes) {
+  SymbolicTileAnalysisOrError symbolic_tile_analysis_or =
+      SymbolicTileAnalysis::AnalyzeComputation(*computation,
+                                               builder.getContext());
+  if (std::holds_alternative<FusionDecision>(symbolic_tile_analysis_or)) {
+    return Internal(
+        "Unsupported fusion in EmitGeneric: %s",
+        std::get<FusionDecision>(symbolic_tile_analysis_or).Explain());
+  }
+
+  const auto& symbolic_tile_analysis =
+      std::get<SymbolicTileAnalysis>(symbolic_tile_analysis_or);
   const HloInstruction* root = computation->root_instruction();
   auto loc = mlir::NameLoc::get(builder.getStringAttr(root->name()));
   ImplicitLocOpBuilder b(loc, builder);
 
+  Value pid = b.create<ma::IndexCastUIOp>(
+      b.getIndexType(), b.create<mt::GetProgramIdOp>(mt::ProgramIDDim::X));
+
+  TF_ASSIGN_OR_RETURN(
+      TiledHloComputation tiled_hlo_computation,
+      symbolic_tile_analysis.ComputeTiledHloInstructions(output_tile_sizes));
+  TF_ASSIGN_OR_RETURN(Value result,
+                      EmitTiledScope(b, libdevice_path, device_info,
+                                     tiled_hlo_computation, fn, pid));
+
+  const auto& tiled_hlo = *tiled_hlo_computation.GetRoot();
+  auto make_tensor = ir_emitter_triton_internal::CreateMakeTensorPtrOp(
+      b, pid, tiled_hlo, fn.getArgument(computation->num_parameters()));
+  b.create<mt::StoreOp>(make_tensor.op, result, make_tensor.boundary_checks,
+                        mt::CacheModifier::NONE, mt::EvictionPolicy::NORMAL);
+
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::vector<int64_t>> SoftMaxOutputTileSizes(
+    const HloComputation* computation) {
   // Assumptions we make about the matcher:
   //   * matches Softmax "diamonds" on the last axis, along with any number of
   //     elementwise operations/bitcasts on any edge
@@ -2492,44 +2538,34 @@ absl::Status EmitTiledSoftMax(mlir::OpBuilder builder,
   }
 
   int row_len = reduce_input_shape.dimensions_minor(0);
-
-  Value pid = b.create<ma::IndexCastUIOp>(
-      b.getIndexType(), b.create<mt::GetProgramIdOp>(mt::ProgramIDDim::X));
-
-  std::vector<int64_t> output_tile_sizes(
-      computation->root_instruction()->shape().rank(), 1);
+  std::vector<int64_t> output_tile_sizes(root_shape.rank(), 1);
   output_tile_sizes.back() = row_len;
-
-  TF_ASSIGN_OR_RETURN(TiledHloComputation tiled_hlo_computation,
-                      analysis->ComputeTiledHloInstructions(output_tile_sizes));
-  TF_ASSIGN_OR_RETURN(Value result,
-                      EmitTiledScope(b, libdevice_path, device_info,
-                                     tiled_hlo_computation, fn, pid));
-
-  const auto& tiled_hlo = *tiled_hlo_computation.GetRoot();
-  auto make_tensor = ir_emitter_triton_internal::CreateMakeTensorPtrOp(
-      b, pid, tiled_hlo, fn.getArgument(computation->num_parameters()));
-  b.create<mt::StoreOp>(make_tensor.op, result, make_tensor.boundary_checks,
-                        mt::CacheModifier::NONE, mt::EvictionPolicy::NORMAL);
-
-  return absl::OkStatus();
+  return output_tile_sizes;
 }
 
 absl::Status EmitSoftMax(mlir::OpBuilder builder,
                          absl::string_view libdevice_path,
                          const se::DeviceDescription& device_info,
-                         const TritonFusionAnalysis& analysis,
+                         const TritonFusionAnalysis&,
                          const HloComputation* computation,
                          mlir::triton::FuncOp fn,
-                         const TritonGemmConfig& config) {
+                         const TritonGemmConfig& config,
+                         const std::vector<int64_t>& output_tile_sizes) {
   SymbolicTileAnalysisOrError symbolic_tile_analysis_or =
       SymbolicTileAnalysis::AnalyzeComputation(*computation,
                                                builder.getContext());
   if (auto* symbolic_tile_analysis =
           std::get_if<SymbolicTileAnalysis>(&symbolic_tile_analysis_or)) {
-    return EmitTiledSoftMax(builder, libdevice_path, device_info,
-                            symbolic_tile_analysis, computation, fn);
+    TF_ASSIGN_OR_RETURN(std::vector<int64_t> output_tile_sizes,
+                        SoftMaxOutputTileSizes(computation));
+    return EmitGeneric(builder, libdevice_path, device_info,
+                       TritonFusionAnalysis{}, computation, fn,
+                       TritonGemmConfig{}, output_tile_sizes);
   }
+  // TODO(b/332649307): Remove the fallback on the legacy triton analysis once
+  //  the symbolic tile analysis can handle all cases.
+  TF_ASSIGN_OR_RETURN(TritonFusionAnalysis analysis,
+                      TritonFusionAnalysis::Execute(*computation));
 
   const HloInstruction* root = computation->root_instruction();
   auto loc = mlir::NameLoc::get(builder.getStringAttr(root->name()));
@@ -2707,7 +2743,8 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> CreateTritonModule(
     const TritonFusionAnalysis& analysis, absl::string_view fn_name,
     const HloComputation* hlo_computation,
     const se::DeviceDescription& device_info, const TritonGemmConfig& config,
-    TritonIrEmitter ir_emitter, mlir::MLIRContext& mlir_context) {
+    const std::vector<int64_t>& output_tile_sizes, TritonIrEmitter ir_emitter,
+    mlir::MLIRContext& mlir_context) {
   mlir_context
       .loadDialect<mt::TritonDialect, mt::gpu::TritonGPUDialect,
                    mlir::arith::ArithDialect, mlir::affine::AffineDialect>();
@@ -2744,7 +2781,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> CreateTritonModule(
 
   TF_RETURN_IF_ERROR(ir_emitter(
       b, GetLibdevicePath(hlo_computation->parent()->config(), device_info),
-      device_info, analysis, hlo_computation, fn, config));
+      device_info, analysis, hlo_computation, fn, config, output_tile_sizes));
 
   b.create<mt::ReturnOp>(loc);
 
@@ -2767,8 +2804,8 @@ absl::StatusOr<TritonWrapperResult> TritonWrapper(
     const TritonFusionAnalysis& analysis, absl::string_view fn_name,
     const HloComputation* hlo_computation, const se::GpuComputeCapability& cc,
     const se::DeviceDescription& device_info, const TritonGemmConfig& config,
-    llvm::Module* llvm_module, TritonIrEmitter ir_emitter,
-    mlir::MLIRContext& mlir_context) {
+    const std::vector<int64_t>& output_tile_sizes, llvm::Module* llvm_module,
+    TritonIrEmitter ir_emitter, mlir::MLIRContext& mlir_context) {
   if (std::holds_alternative<se::CudaComputeCapability>(cc)) {
     auto ccCuda = std::get<se::CudaComputeCapability>(cc);
     if (!ccCuda.IsAtLeastAmpere()) {
@@ -2780,7 +2817,7 @@ absl::StatusOr<TritonWrapperResult> TritonWrapper(
   TF_ASSIGN_OR_RETURN(
       auto triton_module,
       CreateTritonModule(analysis, fn_name, hlo_computation, device_info,
-                         config, ir_emitter, mlir_context));
+                         config, output_tile_sizes, ir_emitter, mlir_context));
 
   VLOG(3) << hlo_computation->ToString(HloPrintOptions::ShortParsable());
   VLOG(2) << config.ToString();

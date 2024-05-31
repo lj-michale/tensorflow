@@ -224,7 +224,6 @@ limitations under the License.
 #include "xla/service/zero_sized_hlo_elimination.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/status.h"
 #include "xla/status_macros.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/device_description.pb.h"
@@ -1226,9 +1225,6 @@ absl::Status GpuCompiler::OptimizeHloModule(
   // Layout normalization will create scatters that are not simplified and
   // also have unsorted update_window_dims.
   layout_normalization_pipeline.AddPass<ScatterSimplifier>();
-  // Layout normalization will create gathers that are not simplified and also
-  // have unsorted offset_dims.
-  layout_normalization_pipeline.AddPass<GatherSimplifier>();
   TF_RETURN_IF_ERROR(layout_normalization_pipeline.Run(hlo_module).status());
   // Run target-specific HLO optimization passes after layout assignment.
   TF_RETURN_IF_ERROR(OptimizeHloPostLayoutAssignment(
@@ -1382,9 +1378,6 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
     // Layout normalization will create scatters that are not simplified and
     // also have unsorted update_window_dims.
     pipeline.AddPass<ScatterSimplifier>();
-    // Layout normalization will create gathers that are not simplified and
-    // also have unsorted offset_dims.
-    pipeline.AddPass<GatherSimplifier>();
     pipeline.AddPass<BroadcastCanonicalizer>();
 
     pipeline.AddPass<ReductionDegenerateDimRemover>();

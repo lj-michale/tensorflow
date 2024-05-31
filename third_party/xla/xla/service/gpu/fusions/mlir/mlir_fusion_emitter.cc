@@ -100,6 +100,7 @@ limitations under the License.
 #include "xla/status_macros.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/util.h"
+#include "tsl/framework/mlir/status_scoped_diagnostic_handler.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 
@@ -287,7 +288,7 @@ MlirFusionEmitterBase::CreateLLVMModule(
     const BufferAssignment* buffer_assignment) const {
   bool is_amd = std::holds_alternative<se::RocmComputeCapability>(
       device.gpu_compute_capability());
-  auto* hlo_module = fusion.GetModule();
+  HloModule* hlo_module = fusion.GetModule();
   std::unique_ptr<mlir::interpreter::MlirCompilationTrace> trace = nullptr;
   if (DumpingEnabledForHloModule(*hlo_module) &&
       DumpingEnabledForHloPass("mlir-fusion-emitter",
@@ -574,12 +575,10 @@ absl::Status MlirFusionEmitterBase::RunPassPipeline(
         std::make_unique<mlir::interpreter::MlirCompilerTraceInstrumentation>(
             *trace));
   }
+
+  tsl::StatusScopedDiagnosticHandler diagnostic_handler(module.getContext());
   if (pm.run(module).failed()) {
-    std::string module_dump;
-    llvm::raw_string_ostream os(module_dump);
-    module->print(os);
-    return absl::InternalError(absl::StrFormat(
-        "Failed to run pass pipeline.\nMLIR module:\n%s", module_dump));
+    return diagnostic_handler.consumeStatus();
   }
   return absl::OkStatus();
 }
