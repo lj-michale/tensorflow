@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/service/cpu/runtime/kernel_thunk.h"
 
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -42,18 +43,20 @@ KernelThunk::KernelThunk(absl::Span<const BufferAllocation::Slice> buffers,
       thread_dim_(thread_dim) {}
 
 absl::Status KernelThunk::Execute(const ExecuteParams& params) {
-  VLOG(3) << absl::StrFormat(
+  VLOG(3) << absl::StreamFormat(
       "Launch host kernel %s with %d buffer arguments: %s", kernel_name_,
       buffers_.size(), thread_dim_.ToString());
 
   absl::InlinedVector<se::DeviceMemoryBase, 8> buffers_data;
   buffers_data.reserve(buffers_.size());
 
+  int64_t arg_num = 0;
   for (BufferAllocation::Slice& buffer : buffers_) {
     TF_ASSIGN_OR_RETURN(buffers_data.emplace_back(),
                         params.buffer_allocations->GetDeviceAddress(buffer));
-    VLOG(3) << absl::StrFormat(" - add argument %s (%p)", buffer.ToString(),
-                               buffers_data.back().opaque());
+    VLOG(3) << absl::StreamFormat("  arg #%d: %s (%p)", arg_num++,
+                                  buffer.ToString(),
+                                  buffers_data.back().opaque());
   }
 
   // TODO(ezhulenev): Kernel ptr should be loaded as a part of Thunk

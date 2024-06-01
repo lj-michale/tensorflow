@@ -304,7 +304,10 @@ MlirFusionEmitterBase::CreateLLVMModule(
   pm.addPass(CreateEraseDeadFunctionsPass());
   pm.addPass(mlir::createCSEPass());
   pm.addPass(CreateLowerXlaGpuToScfPass());
-  pm.addPass(mlir::createInlinerPass());
+  pm.addPass(mlir::createInlinerPass({}, [&](mlir::OpPassManager& pm) {
+    // CSE after inlining because inlining can introduce duplicates.
+    pm.addPass(mlir::createCSEPass());
+  }));
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
   pm.addPass(mlir::mhlo::createConvertToSignlessPass());
@@ -577,10 +580,8 @@ absl::Status MlirFusionEmitterBase::RunPassPipeline(
   }
 
   tsl::StatusScopedDiagnosticHandler diagnostic_handler(module.getContext());
-  if (pm.run(module).failed()) {
-    return diagnostic_handler.consumeStatus();
-  }
-  return absl::OkStatus();
+  (void)pm.run(module);
+  return diagnostic_handler.consumeStatus();
 }
 
 }  // namespace gpu

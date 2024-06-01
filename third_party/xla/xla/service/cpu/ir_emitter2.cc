@@ -37,6 +37,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_schedule.h"
 #include "xla/service/cpu/elemental_math_emitter.h"
 #include "xla/service/cpu/ir_emitter.h"
@@ -47,6 +48,7 @@ limitations under the License.
 #include "xla/service/llvm_ir/loop_emitter.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
@@ -121,10 +123,10 @@ static llvm::FunctionType* KernelFunctionTy(llvm::LLVMContext& ctx) {
 class IrEmitter2::ElementalIrEmitter : public xla::ElementalIrEmitter {
  public:
   ElementalIrEmitter(llvm::Module* module, llvm::IRBuilder<>* b,
-                     const HloSchedule* schedule, IrEmitter* nested_ir_emitter,
+                     const HloModule* hlo_module, IrEmitter* nested_ir_emitter,
                      bool fast_min_max)
       : xla::ElementalIrEmitter(module, b),
-        schedule_(schedule),
+        hlo_module_(hlo_module),
         nested_ir_emitter_(nested_ir_emitter),
         fast_min_max_(fast_min_max) {}
 
@@ -148,16 +150,21 @@ class IrEmitter2::ElementalIrEmitter : public xla::ElementalIrEmitter {
   absl::StatusOr<std::vector<llvm::Value*>> EmitThreadLocalCall(
       const HloComputation& callee, absl::Span<llvm::Value* const> parameters,
       absl::string_view name, bool is_reducer) override {
+    // Module must be scheduled to emit thread local computation.
+    if (!hlo_module_ || !hlo_module_->has_schedule()) {
+      return absl::InternalError(
+          "HLO module must be scheduled to emit thread local computation.");
+    }
     // Create a nested function for thread local computation if it is not
     // already created. Nested functions are created with internal linkage.
     if (!nested_ir_emitter_->is_computation_emitted(callee, is_reducer)) {
       VLOG(2) << "Emit nested computation: " << callee.name();
       TF_RETURN_IF_ERROR(
           nested_ir_emitter_
-              ->EmitComputation(const_cast<HloComputation*>(&callee), name,
-                                false,
-                                schedule_->sequence(&callee).instructions(),
-                                /*allow_reassociation=*/is_reducer)
+              ->EmitComputation(
+                  const_cast<HloComputation*>(&callee), name, false,
+                  hlo_module_->schedule().sequence(&callee).instructions(),
+                  /*allow_reassociation=*/is_reducer)
               .status());
     }
 
@@ -173,7 +180,7 @@ class IrEmitter2::ElementalIrEmitter : public xla::ElementalIrEmitter {
   bool fast_min_max() override { return fast_min_max_; }
 
  private:
-  const HloSchedule* schedule_;
+  const HloModule* hlo_module_;
   IrEmitter* nested_ir_emitter_;
   bool fast_min_max_;
 };
@@ -196,6 +203,35 @@ bool IrEmitter2::fast_min_max() const {
   return hlo_module_.config().debug_options().xla_cpu_enable_fast_min_max();
 }
 
+static absl::Status EmitElementalLoops(
+    llvm::IRBuilder<>& b, const HloInstruction* instr,
+    const llvm_ir::ElementGenerator& element_generator,
+    absl::Span<const llvm_ir::IrArray> results) {
+  // We can emit loops for instruction with multiple results only if it is a
+  // fusion, reduce or reduce window.
+  bool multiple_results = results.size() > 1;
+  bool support_multiple_results = instr->opcode() == HloOpcode::kFusion ||
+                                  instr->opcode() == HloOpcode::kReduce ||
+                                  instr->opcode() == HloOpcode::kReduceWindow;
+
+  if (multiple_results && !support_multiple_results) {
+    return Internal(
+        "Multi-output host kernels are not supported for %s instruction",
+        HloOpcodeString(instr->opcode()));
+  }
+
+  if (multiple_results) {
+    TF_RETURN_IF_ERROR(llvm_ir::LoopEmitter(element_generator, results, &b)
+                           .EmitLoop(llvm_ir::IrName(instr)));
+  } else {
+    TF_RETURN_IF_ERROR(
+        llvm_ir::LoopEmitter(element_generator, results.front(), &b)
+            .EmitLoop(llvm_ir::IrName(instr)));
+  }
+
+  return absl::OkStatus();
+}
+
 absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitElementalHostKernel(
     const HloInstruction* instr) {
   VLOG(2) << "Emit elemental host kernel: " << instr->name();
@@ -213,19 +249,13 @@ absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitElementalHostKernel(
     };
   }
 
-  if (kernel_prototype.results.size() > 1) {
-    return absl::InternalError("Multi-output host kernels are not supported");
-  }
-
-  ElementalIrEmitter elemental_emitter(module_, &b, &hlo_module_.schedule(),
+  ElementalIrEmitter elemental_emitter(module_, &b, &hlo_module_,
                                        nested_ir_emitter_, fast_min_max());
   llvm_ir::ElementGenerator element_generator =
       elemental_emitter.MakeElementGenerator(instr, operand_to_generator);
 
-  TF_RETURN_IF_ERROR(
-      llvm_ir::LoopEmitter(element_generator, kernel_prototype.results[0], &b)
-          .EmitLoop(llvm_ir::IrName(instr)));
-
+  TF_RETURN_IF_ERROR(EmitElementalLoops(b, instr, element_generator,
+                                        kernel_prototype.results));
   return kernels_.emplace_back(kernel_prototype.function->getName().str());
 }
 
@@ -243,7 +273,7 @@ absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitFusionHostKernel(
   llvm::IRBuilder<> b(module_->getContext());
   b.SetInsertPoint(kernel_prototype.function->getEntryBlock().getTerminator());
 
-  ElementalIrEmitter elemental_emitter(module_, &b, &hlo_module_.schedule(),
+  ElementalIrEmitter elemental_emitter(module_, &b, &hlo_module_,
                                        nested_ir_emitter_, fast_min_max());
   FusedIrEmitter fused_emitter(elemental_emitter);
 
@@ -258,10 +288,8 @@ absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitFusionHostKernel(
       auto element_generator,
       fused_emitter.GetGenerator(*fusion->fused_expression_root()));
 
-  TF_RETURN_IF_ERROR(
-      llvm_ir::LoopEmitter(element_generator, kernel_prototype.results[0], &b)
-          .EmitLoop(llvm_ir::IrName(fusion)));
-
+  TF_RETURN_IF_ERROR(EmitElementalLoops(b, fusion, element_generator,
+                                        kernel_prototype.results));
   return kernels_.emplace_back(kernel_prototype.function->getName().str());
 }
 
@@ -323,7 +351,7 @@ IrEmitter2::KernelPrototype IrEmitter2::EmitKernelPrototype(
           << ", #arguments=" << arguments.size()
           << ", #results=" << results.size();
   for (const Shape& argument : arguments) {
-    VLOG(3) << "  arguments: " << argument.ToString(true);
+    VLOG(3) << "  argument: " << argument.ToString(true);
   }
   for (const Shape& result : results) {
     VLOG(3) << "  result: " << result.ToString(true);

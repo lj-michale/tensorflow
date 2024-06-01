@@ -2,7 +2,6 @@
 #    LLVM-based CPU backend for XLA.
 
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@local_tsl//tsl/platform:build_config.bzl", "tf_proto_library")
 load(
     "@local_tsl//tsl/platform:build_config_root.bzl",
@@ -51,41 +50,6 @@ filegroup(
         "**/*.cc",
         "**/*.h",
     ]),
-)
-
-# Collection of XLA tests that support XLA:CPU thunk-based runtime. We keep
-# running them on TAP while we keep working on porting XLA:CPU to the new
-# runtime.
-#
-# XLA:CPU thunks enabled with:
-#   --test_env=XLA_FLAGS=--xla_cpu_use_thunk_runtime=true
-#
-test_suite(
-    name = "thunk_runtime_tests",
-    tests = [
-        "//xla/tests:array_elementwise_ops_test_cpu",
-        "//xla/tests:axpy_simple_test_cpu",
-        "//xla/tests:convert_test_cpu",
-        "//xla/tests:copy_test_cpu",
-        "//xla/tests:floor_ceil_test_cpu",
-        "//xla/tests:numerics_test_cpu",
-        "//xla/tests:reshape_test_cpu",
-        "//xla/tests:reverse_test_cpu",
-        "//xla/tests:unary_op_test_cpu",
-        "//xla/tests/exhaustive:exhaustive_binary_16_bit_test_cpu",
-    ],
-)
-
-bool_flag(
-    name = "experimental_mlir_gpu",
-    build_setting_default = False,
-)
-
-config_setting(
-    name = "experimental_mlir_gpu_enabled",
-    flag_values = {
-        ":experimental_mlir_gpu": "True",
-    },
 )
 
 cc_library(
@@ -654,6 +618,7 @@ cc_library(
         ":elemental_math_emitter",
         ":ir_emitter",
         "//xla:shape_util",
+        "//xla:util",
         "//xla/hlo/ir:hlo",
         "//xla/service:elemental_ir_emitter",
         "//xla/service/llvm_ir:fused_ir_emitter",
@@ -869,7 +834,6 @@ cc_library(
         ":cpu_options",
         ":cpu_runtime",
         ":ir_emission_utils",
-        ":mlir_emitter",
         ":target_machine_features",
         ":tiled_dot_emitter",
         ":vector_support_library",
@@ -884,14 +848,19 @@ cc_library(
         "//xla/service/llvm_ir:kernel_support_library",
         "//xla/service/llvm_ir:llvm_loop",
         "//xla/service/llvm_ir:llvm_util",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithUtils",
         "@llvm-project//mlir:DialectUtils",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LinalgDialect",
         "@llvm-project//mlir:Pass",
+        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:status",
     ],
@@ -1631,30 +1600,6 @@ xla_cc_test(
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:MC",
         "@llvm-project//llvm:Target",
-    ],
-)
-
-cc_library(
-    name = "mlir_emitter",
-    srcs = ["mlir_emitter.cc"],
-    hdrs = ["mlir_emitter.h"],
-    deps = [
-        "//xla:shape_util",
-        "//xla/service/llvm_ir:llvm_util",
-        "//xla/translate/hlo_to_mhlo:hlo_utils",
-        "@com_google_absl//absl/status",
-        "@llvm-project//llvm:Core",
-        "@llvm-project//llvm:IPO",
-        "@llvm-project//llvm:Linker",
-        "@llvm-project//mlir:AffineToStandard",
-        "@llvm-project//mlir:FuncDialect",
-        "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:LinalgTransforms",
-        "@llvm-project//mlir:Pass",
-        "@llvm-project//mlir:SCFToControlFlow",
-        "@llvm-project//mlir:ToLLVMIRTranslation",
-        "@llvm-project//mlir:Transforms",
-        "@llvm-project//mlir:VectorToLLVM",
     ],
 )
 
