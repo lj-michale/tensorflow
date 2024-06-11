@@ -23,7 +23,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/stream_executor/device_memory.h"
-#include "xla/stream_executor/stream_executor.h"
+#include "xla/stream_executor/stream_executor_common.h"
 #include "xla/stream_executor/tpu/tpu_platform_interface.h"
 #include "xla/stream_executor/tpu/tpu_topology.h"
 
@@ -34,10 +34,10 @@ class TpuCore;
 namespace tensorflow {
 namespace tpu {
 
-class TpuExecutorInterface : public stream_executor::StreamExecutor {
+class TpuExecutorInterface : public stream_executor::StreamExecutorCommon {
  public:
   explicit TpuExecutorInterface(stream_executor::Platform* platform)
-      : StreamExecutor(platform) {}
+      : StreamExecutorCommon(platform) {}
 
   class TemporaryDeviceMemory {
    public:

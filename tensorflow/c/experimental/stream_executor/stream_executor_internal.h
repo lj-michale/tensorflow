@@ -24,7 +24,6 @@ limitations under the License.
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream_common.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "xla/stream_executor/stream_executor_interface.h"
 #include "tsl/platform/statusor.h"
 
 namespace stream_executor {
@@ -123,6 +122,14 @@ class CStream : public StreamCommon {
       stream_executor_->destroy_stream(device_, stream_handle_);
       stream_handle_ = nullptr;
     }
+  }
+  absl::Status RefreshStatus() override {
+    tensorflow::TF_StatusPtr c_status(TF_NewStatus());
+    stream_executor_->get_stream_status(device_, stream_handle_,
+                                        c_status.get());
+    absl::Status status = tensorflow::StatusFromTF_Status(c_status.get());
+    CheckStatus(status);
+    return status;
   }
 
   SP_Stream Handle() { return stream_handle_; }

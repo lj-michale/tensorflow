@@ -405,8 +405,11 @@ message DebugOptions {
   bool xla_gpu_enable_all_gather_combine_by_dim = 254;
   bool xla_gpu_enable_reduce_scatter_combine_by_dim = 257;
 
-  // Combine GPU all-reduces into a single operation over a contiguous buffer.
-  bool xla_gpu_all_reduce_contiguous = 158;
+  // Was xla_gpu_all_reduce_contiguous
+  reserved 158;
+
+  // Split AR across all partitions into logical RS followed by AR.
+  bool xla_gpu_enable_all_reduce_splitter = 299;
 
   // Enable allreduce reassociation on allreduces that are converted to a wider
   // type. The resulting allreduce will be promoted to a wider-typed allreduce.
@@ -722,7 +725,16 @@ message DebugOptions {
   // will use for p2p operations.
   int64 xla_gpu_nccl_p2p_max_nchannels = 274;
 
-  bool xla_gpu_enable_mlir_emitters = 275;
+  reserved 275;  // was xla_gpu_enable_mlir_emitters
+
+  // Choose the level of mlir emitters that are enabled.
+  // Current levels:
+  // 0: Disabled.
+  // 1: Loop emitter
+  // 2: + Loop-like emitters
+  // 3: + Transpose
+  // 4: + Reduce
+  int64 xla_gpu_mlir_emitter_level = 303;
   // The maximum number of kernels to emit with MLIR. Unlimited if 0.
   int64 xla_gpu_max_mlir_kernels = 281;
   // The number of initial kernels to not emit with MLIR. Only supported kernels
@@ -783,7 +795,15 @@ message DebugOptions {
   // a deterministic implementation.
   bool xla_gpu_exclude_nondeterministic_ops = 297;
 
-  // Next id: 299
+  // If true, Nccl errors will terminate the process.
+  bool xla_gpu_nccl_terminate_on_error = 301;
+
+  // Use Shardonnay, a new partitioner, to replace the existing
+  // ShardingPropagation and SpmdPartitioner. See go/xla-sdy-pipeline for
+  // details.
+  bool xla_use_shardonnay = 302;
+
+  // Next id: 304
 
   // Extra options to pass to the compilation backend (e.g. LLVM); specific
   // interpretation of these values is left to the backend.

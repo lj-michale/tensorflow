@@ -22,7 +22,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/stream_executor/command_buffer.h"
-#include "xla/stream_executor/stream_executor_interface.h"
+#include "xla/stream_executor/stream_executor.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 
@@ -30,7 +30,7 @@ namespace stream_executor {
 
 absl::StatusOr<std::unique_ptr<CommandBuffer>>
 TraceCommandBufferFactory::Create(
-    StreamExecutorInterface* executor,
+    StreamExecutor* executor,
     absl::AnyInvocable<absl::Status(Stream*)> function,
     CommandBuffer::Mode mode) {
   TF_ASSIGN_OR_RETURN(auto stream, executor->CreateStream());
@@ -40,7 +40,7 @@ TraceCommandBufferFactory::Create(
 
 absl::StatusOr<std::unique_ptr<CommandBuffer>>
 TraceCommandBufferFactory::Create(
-    StreamExecutorInterface* executor, Stream* stream,
+    StreamExecutor* executor, Stream* stream,
     absl::AnyInvocable<absl::Status(Stream*)> function,
     CommandBuffer::Mode mode) {
   if (stream == nullptr)

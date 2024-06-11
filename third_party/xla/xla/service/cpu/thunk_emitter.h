@@ -45,6 +45,11 @@ class ThunkEmitter {
   absl::StatusOr<ThunkSequence> EmitEntryComputation(const HloModule& module);
 
  private:
+  struct HostKernelAllocationSlices {
+    std::vector<BufferAllocation::Slice> arguments;
+    std::vector<BufferAllocation::Slice> results;
+  };
+
   // Returns the buffer allocation slice assigned to the given instruction at
   // the given shape index. Instruction must have a unique slice assigned to it!
   absl::StatusOr<BufferAllocation::Slice> GetAllocationSlice(
@@ -59,6 +64,9 @@ class ThunkEmitter {
   absl::StatusOr<ThunkSequence> EmitCallThunk(
       const HloInstruction* instruction);
 
+  absl::StatusOr<ThunkSequence> EmitConcatenateThunk(
+      const HloInstruction* instruction);
+
   absl::StatusOr<ThunkSequence> EmitCopyThunk(
       const HloInstruction* instruction);
 
@@ -71,13 +79,27 @@ class ThunkEmitter {
   absl::StatusOr<ThunkSequence> EmitReductionKernelThunk(
       const HloInstruction* instruction);
 
+  absl::StatusOr<ThunkSequence> EmitRngGetAndUpdateStateThunk(
+      const HloInstruction* instruction);
+
+  absl::StatusOr<ThunkSequence> EmitInfeedThunk(
+      const HloInstruction* instruction);
+
+  absl::StatusOr<ThunkSequence> EmitOutfeedThunk(
+      const HloInstruction* instruction);
+
+  absl::StatusOr<ThunkSequence> EmitConditionThunk(
+      const HloInstruction* instruction);
+
   absl::StatusOr<ThunkSequence> EmitWhileThunk(
       const HloInstruction* instruction);
 
   // Returns the list of buffer allocation slices assigned to the given
-  // instruction leaf buffers. We do not materialize tuples at run time and only
-  // read and write from buffers corresponding to arrays.
-  absl::StatusOr<std::vector<BufferAllocation::Slice>> GetLeafAllocationSlices(
+  // instruction that will be passed to the host kernel as arguments: a
+  // flattened list of all the leaf buffers for all operands and result. We do
+  // not materialize tuples at run time and only read and write from buffers
+  // corresponding to arrays.
+  absl::StatusOr<HostKernelAllocationSlices> GetHostKernelAllocationSlices(
       const HloInstruction* instruction);
 
   IrEmitter2* ir_emitter_;

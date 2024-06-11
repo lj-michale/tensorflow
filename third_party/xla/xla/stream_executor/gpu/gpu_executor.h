@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-// The CUDA implementation of the StreamExecutorInterface functionality.
+// The CUDA implementation of the StreamExecutor functionality.
 // CUDA inclusions are ideally confined to this implementation file.
 //
 // The notions from the StreamExecutor basically correspond to the CUDA streams
@@ -57,8 +57,7 @@ limitations under the License.
 #include "xla/stream_executor/memory_allocation.h"
 #include "xla/stream_executor/module_spec.h"
 #include "xla/stream_executor/platform.h"
-#include "xla/stream_executor/stream_executor.h"
-#include "xla/stream_executor/stream_executor_interface.h"
+#include "xla/stream_executor/stream_executor_common.h"
 #include "tsl/platform/thread_annotations.h"
 
 namespace stream_executor {
@@ -71,8 +70,8 @@ class GpuKernel;
 class GpuCommandBuffer;
 
 // CUDA-platform implementation of the platform-agnostic
-// StreamExecutorInterface.
-class GpuExecutor : public StreamExecutor {
+// StreamExecutor.
+class GpuExecutor : public StreamExecutorCommon {
   // Helper classes to attach a type erased state to the GpuExecutor. Currently,
   // we just need to support some XLA specific state.
   class Object {
@@ -104,7 +103,7 @@ class GpuExecutor : public StreamExecutor {
   // sub_platform indicates the subplatform used in this executor; it must
   // be a CUDA type.
   GpuExecutor(Platform* platform, int device_ordinal)
-      : StreamExecutor(platform),
+      : StreamExecutorCommon(platform),
         device_(0),
         context_(nullptr),
         device_ordinal_(device_ordinal),
@@ -239,9 +238,9 @@ class GpuExecutor : public StreamExecutor {
 
   absl::Status BlockHostUntilDone(Stream* stream) override;
 
-  absl::Status EnablePeerAccessTo(StreamExecutorInterface* other) override;
+  absl::Status EnablePeerAccessTo(StreamExecutor* other) override;
 
-  bool CanEnablePeerAccessTo(StreamExecutorInterface* other) override;
+  bool CanEnablePeerAccessTo(StreamExecutor* other) override;
 
   bool DeviceMemoryUsage(int64_t* free, int64_t* total) const override;
 

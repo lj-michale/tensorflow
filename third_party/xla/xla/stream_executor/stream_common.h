@@ -42,7 +42,7 @@ limitations under the License.
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream.h"
-#include "xla/stream_executor/stream_executor_pimpl.h"
+#include "xla/stream_executor/stream_executor.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/thread_annotations.h"
 
@@ -68,7 +68,6 @@ class StreamCommon : public Stream {
 
   PlatformSpecificHandle platform_specific_handle() const override;
   bool ok() const override { return !InErrorState(); }
-  absl::Status RefreshStatus() override TF_LOCKS_EXCLUDED(mu_);
   absl::StatusOr<Stream *> GetOrCreateSubStream() override
       TF_LOCKS_EXCLUDED(mu_);
   void ReturnSubStream(Stream *sub_stream) override TF_LOCKS_EXCLUDED(mu_);
@@ -106,7 +105,7 @@ class StreamCommon : public Stream {
   absl::Status Launch(const ThreadDim &thread_dims, const BlockDim &block_dims,
                       const Kernel &k, const KernelArgs &args) override;
 
- private:
+ protected:
   bool InErrorState() const TF_LOCKS_EXCLUDED(mu_) {
     absl::ReaderMutexLock lock(&mu_);
     return !status_.ok();
@@ -121,6 +120,7 @@ class StreamCommon : public Stream {
 
   void SetError() { CheckError(false /* = operation_retcode */); }
 
+ private:
   // The StreamExecutor that supports the operation of this stream.
   StreamExecutor *parent_;
 

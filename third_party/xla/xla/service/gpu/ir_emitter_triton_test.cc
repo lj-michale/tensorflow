@@ -39,12 +39,17 @@ limitations under the License.
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
 #include "xla/autotuning.pb.h"
 #include "xla/error_spec.h"
+#include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/service/gpu/backend_configs.pb.h"
+#include "xla/service/gpu/fusions/triton.h"
 #include "xla/service/gpu/gpu_device_info_for_tests.h"
+#include "xla/service/gpu/hlo_fusion_analysis.h"
+#include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/matmul_utils.h"
 #include "xla/service/gpu/tests/gpu_codegen_test.h"
 #include "xla/service/gpu/triton_fusion_analysis.h"
@@ -74,6 +79,7 @@ namespace {
 namespace m = ::xla::match;
 
 class TritonTest : public GpuCodegenTest {
+ protected:
   const auto& device_desc() {
     return backend().default_stream_executor()->GetDeviceDescription();
   }
@@ -151,28 +157,39 @@ class TritonFilecheckTest : public TritonTest {
  public:
   absl::Status CreateTritonIrAndFileCheck(
       absl::string_view hlo_text, const TritonGemmConfig& config,
-      const std::vector<int64_t>& output_tile_sizes, TritonIrEmitter emitter,
+      std::vector<int64_t> output_tile_sizes, TritonIrEmitter emitter,
       absl::string_view triton_fusion_name,
       absl::string_view filecheck_pattern);
 };
 
 absl::Status TritonFilecheckTest::CreateTritonIrAndFileCheck(
     absl::string_view hlo_text, const TritonGemmConfig& config,
-    const std::vector<int64_t>& output_tile_sizes, TritonIrEmitter emitter,
+    std::vector<int64_t> output_tile_sizes, TritonIrEmitter emitter,
     absl::string_view triton_fusion_name, absl::string_view filecheck_pattern) {
   TF_ASSIGN_OR_RETURN(std::unique_ptr<VerifiedHloModule> verified_module,
                       ParseAndReturnVerifiedModule(hlo_text));
 
   auto* computation =
       verified_module->GetComputationWithName(triton_fusion_name);
+  auto* fusion = Cast<HloFusionInstruction>(computation->FusionInstruction());
   TF_RET_CHECK(computation != nullptr);
   TF_ASSIGN_OR_RETURN(auto analysis,
                       TritonFusionAnalysis::Execute(*computation));
 
+  auto fusion_analysis = HloFusionAnalysis::Create(fusion, &device_desc());
+
+  if (fusion_analysis.fusion_backend_config().kind() ==
+      kTritonSoftmaxFusionKind) {
+    TritonFusion triton_fusion(fusion_analysis);
+    if (auto launch_config = triton_fusion.launch_config()) {
+      output_tile_sizes = launch_config->output_tile_sizes;
+    }
+  }
+
   mlir::MLIRContext context;
   TF_ASSIGN_OR_RETURN(
       auto module,
-      CreateTritonModule(analysis, "triton_fn", computation,
+      CreateTritonModule(analysis, "triton_fn", fusion,
                          TestGpuDeviceInfo::RTXA6000DeviceInfo(), config,
                          output_tile_sizes, emitter, context));
 
@@ -1528,10 +1545,10 @@ ENTRY entry {
 })";
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> hlo_module,
                           ParseAndReturnVerifiedModule(kHloText));
+  const HloFusionInstruction* triton_dot_fusion = Cast<HloFusionInstruction>(
+      hlo_module->entry_computation()->root_instruction());
   const HloComputation* triton_dot_computation =
-      hlo_module->entry_computation()
-          ->root_instruction()
-          ->fused_instructions_computation();
+      triton_dot_fusion->fused_instructions_computation();
   const se::DeviceDescription dev_info =
       TestGpuDeviceInfo::RTXA6000DeviceInfo();
   llvm::LLVMContext llvm_ctx;
@@ -1541,9 +1558,9 @@ ENTRY entry {
   TritonGemmConfig config(16, 32, 512, 1, 4, 8);
   EXPECT_THAT(
       TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
-                    "test_fn", triton_dot_computation, CudaAmpereOrRocm(),
-                    dev_info, config, /*output_tile_sizes=*/{}, &llvm_module,
-                    &EmitMatMul, mlir_context),
+                    "test_fn", triton_dot_fusion, CudaAmpereOrRocm(), dev_info,
+                    config, /*output_tile_sizes=*/{}, &llvm_module, &EmitMatMul,
+                    mlir_context),
       tsl::testing::StatusIs(
           tsl::error::RESOURCE_EXHAUSTED,
           ::testing::HasSubstr("Shared memory size limit exceeded")));
@@ -1555,9 +1572,9 @@ ENTRY entry {
   TF_ASSERT_OK_AND_ASSIGN(
       const auto result,
       TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
-                    "test_fn", triton_dot_computation, CudaAmpereOrRocm(),
-                    dev_info, config, /*output_tile_sizes=*/{}, &llvm_module,
-                    &EmitMatMul, mlir_context));
+                    "test_fn", triton_dot_fusion, CudaAmpereOrRocm(), dev_info,
+                    config, /*output_tile_sizes=*/{}, &llvm_module, &EmitMatMul,
+                    mlir_context));
   // Use optin shared memory which is > shared_memory_per_block.
   EXPECT_GT(result.shmem_bytes, dev_info.shared_memory_per_block());
 }
@@ -2056,10 +2073,10 @@ ENTRY entry {
 })";
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> hlo_module,
                           ParseAndReturnVerifiedModule(kHloText));
+  const HloFusionInstruction* triton_dot_fusion = Cast<HloFusionInstruction>(
+      hlo_module->entry_computation()->root_instruction());
   const HloComputation* triton_dot_computation =
-      hlo_module->entry_computation()
-          ->root_instruction()
-          ->fused_instructions_computation();
+      triton_dot_fusion->fused_instructions_computation();
   const se::DeviceDescription dev_info =
       TestGpuDeviceInfo::RTXA6000DeviceInfo();
   llvm::LLVMContext llvm_ctx;
@@ -2070,9 +2087,9 @@ ENTRY entry {
   TritonGemmConfig config(512, 512, 32, 1, 1, 2);
   EXPECT_THAT(
       TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
-                    "test_fn", triton_dot_computation, CudaAmpereOrRocm(),
-                    dev_info, config, /*output_tile_sizes=*/{}, &llvm_module,
-                    &EmitMatMul, mlir_context),
+                    "test_fn", triton_dot_fusion, CudaAmpereOrRocm(), dev_info,
+                    config, /*output_tile_sizes=*/{}, &llvm_module, &EmitMatMul,
+                    mlir_context),
       tsl::testing::StatusIs(
           tsl::error::RESOURCE_EXHAUSTED,
           "Tiling complexity heuristic exceeded: 147456 > 9000"));
@@ -2083,9 +2100,9 @@ ENTRY entry {
   config.block_k = 32;
   TF_CHECK_OK(
       TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
-                    "test_fn", triton_dot_computation, CudaAmpereOrRocm(),
-                    dev_info, config, /*output_tile_sizes=*/{}, &llvm_module,
-                    &EmitMatMul, mlir_context)
+                    "test_fn", triton_dot_fusion, CudaAmpereOrRocm(), dev_info,
+                    config, /*output_tile_sizes=*/{}, &llvm_module, &EmitMatMul,
+                    mlir_context)
           .status());
 }
 
@@ -3178,6 +3195,19 @@ ENTRY e {
   EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-2, /*arel=*/1e-2}));
 }
 
+TEST_F(TritonGemmTestWithSplitK, SplitKWithTrivialDimension) {
+  const std::string kHloText = R"(
+ENTRY entry_computation {
+  p0 = f16[1001,1]{1,0} parameter(0)
+  convert = f32[1001,1]{1,0} convert(p0)
+  p1 = f32[1001,2048]{1,0} parameter(1)
+  ROOT dot = f32[1,2048]{1,0} dot(convert, p1),
+    lhs_contracting_dims={0}, rhs_contracting_dims={0}
+})";
+
+  EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-2, /*arel=*/1e-2}));
+}
+
 TEST_F(TritonGemmLevel2Test, NarrowingConvertOutputIsFused) {
   const std::string kHloText = R"(
 HloModule m
@@ -3370,35 +3400,47 @@ ENTRY e {
 }
 
 TEST_F(TritonGemmTestAny,
-       ShouldNotLowerDotWithLhsWithoutNonContractingDimThroughTriton) {
+       LowerDotWithLhsWithoutNonContractingDimThroughTriton) {
   const std::string hlo_text = R"(
 HloModule t
 
 ENTRY e {
-  parameter_0 = f32[32,40] parameter(0)
-  parameter_1 = f32[32,40,64] parameter(1)
-  ROOT dot = f32[32,64] dot(f32[32,40] parameter_0, f32[32,40,64] parameter_1), lhs_batch_dims={0}, lhs_contracting_dims={1}, rhs_batch_dims={0}, rhs_contracting_dims={1}
+  parameter_0 = f32[32,4000] parameter(0)
+  parameter_1 = f32[32,4000,6400] parameter(1)
+  ROOT dot = f32[32,6400] dot(parameter_0, parameter_1), lhs_batch_dims={0},
+    lhs_contracting_dims={1}, rhs_batch_dims={0}, rhs_contracting_dims={1}
 })";
 
-  MatchOptimizedHlo(hlo_text, "CHECK-NOT: triton");
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          GetOptimizedModule(hlo_text));
 
-  EXPECT_TRUE(RunAndCompare(hlo_text, ErrorSpec{/*aabs=*/1e-6, /*arel=*/1e-6}));
+  EXPECT_THAT(
+      module->entry_computation()->root_instruction(),
+      GmockMatch(m::Fusion(m::Parameter(), m::Parameter())
+                     .WithFusionKind(HloInstruction::FusionKind::kCustom)));
+  EXPECT_TRUE(RunAndCompare(hlo_text, ErrorSpec{/*aabs=*/1e-3, /*arel=*/1e-3}));
 }
 
 TEST_F(TritonGemmTestAny,
-       ShouldNotLowerDotWithRhsWithoutNonContractingDimThroughTriton) {
+       LowerDotWithRhsWithoutNonContractingDimThroughTriton) {
   const std::string hlo_text = R"(
 HloModule t
 
 ENTRY e {
-  parameter_0 = f32[32,40,64] parameter(0)
-  parameter_1 = f32[32,40] parameter(1)
-  ROOT dot = f32[32,64] dot(f32[32,40,64] parameter_0, f32[32,40] parameter_1), lhs_batch_dims={0}, lhs_contracting_dims={1}, rhs_batch_dims={0}, rhs_contracting_dims={1}
+  parameter_0 = f32[32,4000,6400] parameter(0)
+  parameter_1 = f32[32,4000] parameter(1)
+  ROOT dot = f32[32,6400] dot(parameter_0, parameter_1), lhs_batch_dims={0},
+    lhs_contracting_dims={1}, rhs_batch_dims={0}, rhs_contracting_dims={1}
 })";
 
-  MatchOptimizedHlo(hlo_text, "CHECK-NOT: triton");
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          GetOptimizedModule(hlo_text));
 
-  EXPECT_TRUE(RunAndCompare(hlo_text, ErrorSpec{/*aabs=*/1e-6, /*arel=*/1e-6}));
+  EXPECT_THAT(
+      module->entry_computation()->root_instruction(),
+      GmockMatch(m::Fusion(m::Parameter(), m::Parameter())
+                     .WithFusionKind(HloInstruction::FusionKind::kCustom)));
+  EXPECT_TRUE(RunAndCompare(hlo_text, ErrorSpec{/*aabs=*/1e-3, /*arel=*/1e-3}));
 }
 
 // This group of tests compares GPU results of dots already rewritten
@@ -3647,18 +3689,16 @@ ENTRY e {
 
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> hlo_module,
                           ParseAndReturnVerifiedModule(kHloTextOptinShmem));
+  const HloFusionInstruction* triton_dot_fusion = Cast<HloFusionInstruction>(
+      hlo_module->entry_computation()->root_instruction());
   const HloComputation* triton_dot_computation =
-      hlo_module->entry_computation()
-          ->root_instruction()
-          ->fused_instructions_computation();
+      triton_dot_fusion->fused_instructions_computation();
   llvm::LLVMContext llvm_ctx;
   llvm::Module llvm_module("module", llvm_ctx);
   mlir::MLIRContext mlir_context;
 
-  TF_ASSERT_OK_AND_ASSIGN(auto gpu_config,
-                          hlo_module->entry_computation()
-                              ->root_instruction()
-                              ->backend_config<GpuBackendConfig>());
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto gpu_config, triton_dot_fusion->backend_config<GpuBackendConfig>());
   const FusionBackendConfig& config = gpu_config.fusion_backend_config();
   TF_ASSERT_OK_AND_ASSIGN(
       TritonGemmConfig triton_gemm_config,
@@ -3666,9 +3706,9 @@ ENTRY e {
   TF_ASSERT_OK_AND_ASSIGN(
       const auto result,
       TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
-                    "test_fn", triton_dot_computation, GpuComputeComp(),
-                    dev_info, triton_gemm_config, /*output_tile_sizes=*/{},
-                    &llvm_module, &EmitMatMul, mlir_context));
+                    "test_fn", triton_dot_fusion, GpuComputeComp(), dev_info,
+                    triton_gemm_config, /*output_tile_sizes=*/{}, &llvm_module,
+                    &EmitMatMul, mlir_context));
   // The config is chosen so that the used memory size is slightly above the
   // 48 kB boundary of standard / optin shared memory so that any GPU that
   // has the optin one should be able to execute the test.
@@ -5485,10 +5525,10 @@ ENTRY entry {
 })";
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> hlo_module,
                           ParseAndReturnVerifiedModule(kHloText));
+  const HloFusionInstruction* triton_dot_fusion = Cast<HloFusionInstruction>(
+      hlo_module->entry_computation()->root_instruction());
   const HloComputation* triton_dot_computation =
-      hlo_module->entry_computation()
-          ->root_instruction()
-          ->fused_instructions_computation();
+      triton_dot_fusion->fused_instructions_computation();
   const se::DeviceDescription dev_info =
       TestGpuDeviceInfo::RTXA6000DeviceInfo();
   llvm::LLVMContext llvm_ctx;
@@ -5497,15 +5537,15 @@ ENTRY entry {
 
   EXPECT_THAT(
       TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
-                    "test_fn", triton_dot_computation,
+                    "test_fn", triton_dot_fusion,
                     se::CudaComputeCapability{se::CudaComputeCapability::VOLTA,
                                               /*minor=*/0},
                     dev_info, TritonGemmConfig{}, /*output_tile_sizes=*/{},
                     &llvm_module, &EmitMatMul, mlir_context),
       tsl::testing::StatusIs(
           absl::StatusCode::kFailedPrecondition,
-          ::testing::StrEq(
-              "Triton support is only enabled for Ampere GPUs and up.")));
+          ::testing::HasSubstr("Triton support is only enabled for Ampere GPUs "
+                               "(compute capability 8.0) and up, but got")));
 }
 
 // This test could be modified to allow TF32 once this bug is fixed.
@@ -5519,7 +5559,8 @@ triton_dot {
   broadcast.1747 = s32[11,24,128]{2,1,0} broadcast(parameter_0),
   dimensions={0,1} parameter_1 = s32[11,24,128]{2,1,0} parameter(1)
   compare.49 = pred[11,24,128]{2,1,0} compare(broadcast.1747, parameter_1),
-      direction=EQ bitcast.4717 = pred[264,128]{1,0} bitcast(compare.49)
+      direction=EQ
+  bitcast.4717 = pred[264,128]{1,0} bitcast(compare.49)
   convert.142 = f32[264,128]{1,0} convert(bitcast.4717)
   parameter_2 = f32[128,8]{1,0} parameter(2)
   ROOT dot.381 = f32[264,8]{1,0} dot(convert.142, parameter_2),

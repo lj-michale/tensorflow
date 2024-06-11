@@ -28,7 +28,6 @@ limitations under the License.
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/event.h"
-#include "xla/stream_executor/stream_executor_interface.h"
 #include "xla/stream_executor/tpu/c_api_conversions.h"
 #include "xla/stream_executor/tpu/c_api_decl.h"
 #include "xla/stream_executor/tpu/status_helper.h"
@@ -60,13 +59,6 @@ absl::Status TpuExecutor::BlockHostUntilDone(Stream* stream) {
   StatusHelper status;
   ExecutorApiFn()->TpuExecutor_BlockHostUntilDoneFn(
       executor_, get_stream(stream), status.c_status);
-  return status.status();
-}
-
-absl::Status TpuExecutor::GetStatus(Stream* stream) {
-  StatusHelper status;
-  ExecutorApiFn()->TpuExecutor_GetStatusFn(executor_, get_stream(stream),
-                                           status.c_status);
   return status.status();
 }
 
@@ -110,7 +102,8 @@ absl::Status TpuExecutor::WaitForEvent(Stream* stream,
 absl::StatusOr<std::unique_ptr<Stream>> TpuExecutor::CreateStream(
     std::optional<std::variant<StreamPriority, int>> priority) {
   SE_Stream* tpu_stream = ExecutorApiFn()->TpuStream_NewFn(executor_);
-  auto stream = std::make_unique<tensorflow::tpu::TpuStream>(tpu_stream, this);
+  auto stream =
+      std::make_unique<tensorflow::tpu::TpuStream>(tpu_stream, this, executor_);
   tpu_platform().mutex().Lock();
   stream_map()[stream.get()] = tpu_stream;
   tpu_platform().mutex().Unlock();

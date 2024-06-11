@@ -100,14 +100,6 @@ class GpuExecutable : public Executable {
     bool enable_debug_info_manager = true;
   };
 
-  // Analyze the entry function to construct buffer allocation and other output
-  // information.
-  static absl::Status SetUpMlirAllocation(
-      mlir::func::FuncOp func, llvm::ArrayRef<int64_t> buffer_sizes,
-      std::vector<BufferAllocation>* allocations,
-      absl::flat_hash_map<ShapeIndex, OutputInfo>* output_info,
-      Shape* output_shape);
-
   static absl::StatusOr<std::unique_ptr<GpuExecutable>> Create(Params params);
   ~GpuExecutable() override;
 
@@ -184,15 +176,6 @@ class GpuExecutable : public Executable {
  private:
   // Use GpuExecutable::Create() to create an instance.
   explicit GpuExecutable(Params params);
-
-  // If `block_host_until_done` is false, execution will not block the host
-  // until the kernels have completed. This is used as an optimization for
-  // clients, such as Tensorflow, that use a single stream of execution for
-  // computations, and allow host-side deallocation from the allocator before
-  // GPU execution completes.
-  absl::Status ExecuteThunksOrXlaRuntime(
-      const ServiceExecutableRunOptions* run_options,
-      const BufferAllocations& buffer_allocations, bool block_host_until_done);
 
   using BufferAllocToDeviceMemoryMap =
       absl::flat_hash_map<BufferAllocation::Index, se::DeviceMemoryBase>;

@@ -36,7 +36,6 @@ limitations under the License.
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "xla/stream_executor/stream_executor_interface.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/stacktrace.h"
@@ -60,17 +59,6 @@ StreamCommon::PlatformSpecificHandle StreamCommon::platform_specific_handle()
   PlatformSpecificHandle handle;
   handle.stream = nullptr;
   return handle;
-}
-
-absl::Status StreamCommon::RefreshStatus() {
-  absl::Status status = parent_->GetStatus(this);
-  // We should not put the stream in an error state, just because the GetStatus
-  // method is unimplemented.
-  if (status != absl::UnimplementedError(
-                    "GetStatus is not supported on this executor.")) {
-    CheckStatus(status);
-  }
-  return status;
 }
 
 absl::Status StreamCommon::RecordEvent(Event *event) {

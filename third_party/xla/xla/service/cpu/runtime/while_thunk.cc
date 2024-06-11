@@ -15,9 +15,13 @@ limitations under the License.
 
 #include "xla/service/cpu/runtime/while_thunk.h"
 
+#include <memory>
 #include <utility>
 
+#include "absl/memory/memory.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "xla/runtime/buffer_use.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/cpu/runtime/thunk.h"
 #include "xla/stream_executor/device_memory.h"
@@ -26,6 +30,14 @@ limitations under the License.
 #include "tsl/profiler/lib/traceme.h"
 
 namespace xla::cpu {
+
+absl::StatusOr<std::unique_ptr<WhileThunk>> WhileThunk::Create(
+    Info info, BufferAllocation::Slice cond_buffer, ThunkSequence cond_sequence,
+    ThunkSequence body_sequence) {
+  return absl::WrapUnique(new WhileThunk(std::move(info), cond_buffer,
+                                         std::move(cond_sequence),
+                                         std::move(body_sequence)));
+}
 
 WhileThunk::WhileThunk(Info info, BufferAllocation::Slice cond_buffer,
                        ThunkSequence cond_sequence, ThunkSequence body_sequence)
@@ -50,6 +62,18 @@ absl::Status WhileThunk::Execute(const ExecuteParams& params) {
   }
 
   return absl::OkStatus();
+}
+
+WhileThunk::BufferUses WhileThunk::buffer_uses() const {
+  BufferUses buffer_uses = {{cond_buffer_, BufferUse::kWrite}};
+
+  BufferUses cond_uses = cond_sequence_.buffer_uses();
+  buffer_uses.insert(buffer_uses.end(), cond_uses.begin(), cond_uses.end());
+
+  BufferUses body_uses = body_sequence_.buffer_uses();
+  buffer_uses.insert(buffer_uses.end(), body_uses.begin(), body_uses.end());
+
+  return buffer_uses;
 }
 
 }  // namespace xla::cpu

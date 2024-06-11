@@ -40,8 +40,8 @@ limitations under the License.
 #include "xla/stream_executor/host/host_stream.h"
 #include "xla/stream_executor/kernel_spec.h"
 #include "xla/stream_executor/launch_dim.h"
+#include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "xla/stream_executor/stream_executor_interface.h"
 #include "tsl/platform/cpu_info.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/mem.h"
@@ -89,7 +89,7 @@ absl::Status HostExecutor::GetKernel(const MultiKernelLoaderSpec& spec,
     if (!loaded.has_value()) continue;
 
     TF_ASSIGN_OR_RETURN(auto kernel_function, *std::move(loaded));
-    host_kernel->SetExecutionEngine(std::move(kernel_function));
+    host_kernel->SetKernelFunction(std::move(kernel_function));
     return absl::OkStatus();
   }
 

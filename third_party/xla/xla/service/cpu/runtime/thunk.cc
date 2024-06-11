@@ -22,6 +22,7 @@ limitations under the License.
 #include <utility>
 
 #include "absl/status/status.h"
+#include "xla/tsl/concurrency/async_value_ref.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/profiler/lib/traceme.h"
@@ -35,11 +36,28 @@ std::string_view Thunk::KindToString(Kind kind) {
       return "call";
     case Kind::kCopy:
       return "copy";
+    case Kind::kConditional:
+      return "conditional";
+    case Kind::kInfeed:
+      return "infeed";
+    case Kind::kRngGetAndUpdateState:
+      return "rng-get-and-update-state";
     case Kind::kKernel:
       return "kernel";
+    case Kind::kOutfeed:
+      return "outfeed";
     case Kind::kWhile:
       return "while";
   }
+}
+
+tsl::AsyncValueRef<Thunk::CompletionEvent> Thunk::ReadyCompletionEvent() {
+  static tsl::AsyncValueOwningRef<CompletionEvent>* event = [] {
+    auto* storage = new tsl::internal::AsyncValueStorage<CompletionEvent>();
+    return new tsl::AsyncValueOwningRef<CompletionEvent>(
+        tsl::MakeAvailableAsyncValueRef<CompletionEvent>(*storage, 1ull));
+  }();
+  return event->AsRef();
 }
 
 // Encodes thunk info into the TraceMe compatible format.
@@ -72,6 +90,15 @@ absl::Status ThunkSequence::Execute(const Thunk::ExecuteParams& params) {
     TF_RETURN_IF_ERROR(thunk->Execute(params));
   }
   return absl::OkStatus();
+}
+
+ThunkSequence::BufferUses ThunkSequence::buffer_uses() const {
+  BufferUses buffer_uses;
+  for (auto& thunk : *this) {
+    BufferUses uses = thunk->buffer_uses();
+    buffer_uses.insert(buffer_uses.end(), uses.begin(), uses.end());
+  }
+  return buffer_uses;
 }
 
 }  // namespace xla::cpu

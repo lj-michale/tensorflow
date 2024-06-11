@@ -143,8 +143,8 @@ cc_library(
         "//xla/service/gpu:matmul_utils",
         "//xla/service/gpu/kernels:custom_kernel",
         "//xla/service/gpu/kernels:custom_kernel_fusion",
-        "//xla/service/gpu/runtime:address_computation_thunk",
         "//xla/service/gpu/runtime:custom_call_thunk",
+        "//xla/service/gpu/runtime:dynamic_slice_thunk",
         "//xla/service/gpu/runtime:gemm_thunk",
         "//xla/service/gpu/runtime:kernel_thunk",
         "//xla/service/gpu/runtime:thunk",
@@ -164,8 +164,8 @@ cc_library(
 )
 
 xla_test(
-    name = "address_computation_fusion_test",
-    srcs = if_cuda_is_configured(["address_computation_fusion_test.cc"]),
+    name = "dynamic_slice_fusion_test",
+    srcs = if_cuda_is_configured(["dynamic_slice_fusion_test.cc"]),
     backends = ["gpu"],
     local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]),
     deps = [
@@ -183,7 +183,7 @@ xla_test(
         "//xla/service:executable",
         "//xla/service:hlo_module_config",
         "//xla/service:hlo_proto_cc",
-        "//xla/service/gpu:address_computation_fusion_rewriter",
+        "//xla/service/gpu:dynamic_slice_fusion_rewriter",
         "//xla/stream_executor",
         "//xla/stream_executor:device_description",
         "//xla/stream_executor/gpu:gpu_types_header",
@@ -458,6 +458,7 @@ cc_library(
         "//xla/service/gpu/fusions/mlir:computation_partitioner",
         "//xla/service/gpu/fusions/mlir:elemental_hlo_to_mlir",
         "//xla/service/gpu/fusions/mlir:mlir_fusion_emitter",
+        "//xla/service/gpu/fusions/mlir:type_util",
         "//xla/service/gpu/fusions/mlir/ir:xla_gpu",
         "//xla/service/gpu/model:indexing_analysis",
         "@com_google_absl//absl/algorithm:container",
@@ -596,7 +597,6 @@ cc_library(
         ":fusion_emitter",
         "//xla:shape_util",
         "//xla:status_macros",
-        "//xla:statusor",
         "//xla/hlo/ir:hlo",
         "//xla/service/gpu:hlo_fusion_analysis",
         "//xla/service/gpu:hlo_traversal",
@@ -613,7 +613,6 @@ cc_library(
         "//xla/service/llvm_ir:llvm_util",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
@@ -685,7 +684,8 @@ xla_test(
         "//xla/service/gpu:stream_executor_util",
         "//xla/service/gpu/runtime:thunk",
         "//xla/service/gpu/tests:gpu_codegen_test",
-        "//xla/stream_executor:stream_executor_headers",
+        "//xla/stream_executor:dnn",
+        "//xla/stream_executor:stream_executor_h",
         "//xla/stream_executor:stream_executor_memory_allocator",
         "//xla/tests:filecheck",
         "//xla/tests:verified_hlo_module",
@@ -770,6 +770,28 @@ cc_library(
     ],
 )
 
+xla_cc_test(
+    name = "reduction_test",
+    srcs = ["reduction_test.cc"],
+    deps = [
+        ":fusion_emitter",
+        ":reduction",
+        "//xla/hlo/ir:hlo",
+        "//xla/service/gpu:gpu_device_info_for_tests",
+        "//xla/service/gpu:hlo_fusion_analysis",
+        "//xla/service/gpu:ir_emitter_context",
+        "//xla/service/gpu/model:indexing_analysis",
+        "//xla/service/gpu/model:indexing_test_utils",
+        "//xla/stream_executor:device_description",
+        "//xla/tests:hlo_test_base",
+        "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
 cc_library(
     name = "reduction_base",
     srcs = ["reduction_base.cc"],
@@ -801,28 +823,6 @@ cc_library(
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:IR",
-    ],
-)
-
-xla_cc_test(
-    name = "reduction_base_test",
-    srcs = ["reduction_base_test.cc"],
-    deps = [
-        ":fusion_emitter",
-        ":reduction_base",
-        "//xla/hlo/ir:hlo",
-        "//xla/service/gpu:gpu_device_info_for_tests",
-        "//xla/service/gpu:hlo_fusion_analysis",
-        "//xla/service/gpu:ir_emitter_context",
-        "//xla/service/gpu/model:indexing_analysis",
-        "//xla/service/gpu/model:indexing_test_utils",
-        "//xla/stream_executor:device_description",
-        "//xla/tests:hlo_test_base",
-        "//xla/tests:xla_internal_test_main",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_googletest//:gtest",
         "@llvm-project//mlir:IR",
     ],
 )
@@ -872,7 +872,9 @@ xla_test(
         ":mlir_emitter_test_base",
         ":reduction_mlir",
         "//xla:error_spec",
+        "//xla/service/gpu/model:indexing_test_utils",
         "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest",
         "@local_tsl//tsl/lib/core:status_test_util",
     ],

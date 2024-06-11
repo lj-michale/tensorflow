@@ -40,8 +40,10 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_input_output_alias_config.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/service/buffer_assignment.h"
+#include "xla/service/cpu/cpu_runtime.h"
 #include "xla/service/cpu/runtime/buffer_allocations.h"
 #include "xla/service/cpu/runtime/thunk.h"
+#include "xla/service/cpu/runtime/thunk_executor.h"
 #include "xla/service/cpu/simple_orc_jit.h"
 #include "xla/service/custom_call_status.h"
 #include "xla/service/custom_call_status_internal.h"
@@ -154,8 +156,10 @@ absl::StatusOr<std::unique_ptr<CpuExecutable>> CpuExecutable::Create(
       std::move(hlo_profile_index_map), std::move(assignment)));
 
   executable->jit_ = std::move(jit);
-  executable->thunks_ = std::move(thunks);
   executable->host_kernels_ = HostKernels(executable->jit_.get());
+
+  TF_ASSIGN_OR_RETURN(executable->thunks_,
+                      ThunkExecutor::Create(std::move(thunks)));
 
   // Re-index constants by their allocation index to allow efficient lookup.
   for (auto& constant : constants) {
@@ -348,7 +352,10 @@ absl::Status CpuExecutable::ExecuteThunks(
                              profile_counters_size);
   VLOG(3) << absl::StrFormat("  Profile counters: %p", profile_counters);
 
-  Thunk::ExecuteParams execute_params = {&*host_kernels_, &allocations};
+  Thunk::ExecuteParams execute_params = {
+      &*host_kernels_, &allocations,
+      runtime::GetXfeedManager(run_options->device_ordinal())};
+
   absl::Status executed = thunks_->Execute(execute_params);
 
   if (run_options->execution_profile()) {

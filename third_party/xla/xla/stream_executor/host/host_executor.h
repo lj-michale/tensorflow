@@ -39,8 +39,7 @@ limitations under the License.
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/memory_allocation.h"
 #include "xla/stream_executor/platform.h"
-#include "xla/stream_executor/stream_executor.h"
-#include "xla/stream_executor/stream_executor_interface.h"
+#include "xla/stream_executor/stream_executor_common.h"
 #include "tsl/platform/threadpool.h"
 
 namespace stream_executor {
@@ -55,7 +54,7 @@ namespace host {
 // This is useful for evaluating the performance of host-based or fallback
 // routines executed under the context of a GPU executor.
 // See stream_executor.h for description of the below operations.
-class HostExecutor : public StreamExecutor {
+class HostExecutor : public StreamExecutorCommon {
  public:
   // A function that loads a kernel function from a given spec. If spec is not
   // supported it returns an empty optional.
@@ -67,7 +66,7 @@ class HostExecutor : public StreamExecutor {
   static void RegisterKernelFunctionLoader(KernelFunctionLoader loader);
 
   HostExecutor(Platform* platform, int device_ordinal)
-      : StreamExecutor(platform), device_ordinal_(device_ordinal) {}
+      : StreamExecutorCommon(platform), device_ordinal_(device_ordinal) {}
 
   absl::Status Init() override;
 
@@ -139,13 +138,11 @@ class HostExecutor : public StreamExecutor {
   CreateDeviceDescription(int device_ordinal);
   int device_ordinal() const override { return device_ordinal_; }
 
-  absl::Status EnablePeerAccessTo(StreamExecutorInterface* other) override {
+  absl::Status EnablePeerAccessTo(StreamExecutor* other) override {
     return absl::OkStatus();
   }
 
-  bool CanEnablePeerAccessTo(StreamExecutorInterface* other) override {
-    return true;
-  }
+  bool CanEnablePeerAccessTo(StreamExecutor* other) override { return true; }
 
   absl::StatusOr<std::unique_ptr<Event>> CreateEvent() override;
 
