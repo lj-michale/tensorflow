@@ -263,7 +263,9 @@ xla_cc_test(
     deps = [
         ":all_reduce_splitter",
         ":hlo_module_config",
+        ":hlo_pass_pipeline",
         "//xla/hlo/ir:hlo",
+        "//xla/service/gpu:gpu_reduce_scatter_creator",
         "//xla/tests:filecheck",
         "//xla/tests:hlo_test_base",
         "@com_google_absl//absl/algorithm:container",
@@ -610,6 +612,23 @@ cc_library(
         "@local_tsl//tsl/platform:regexp",
         "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/profiler/lib:scoped_annotation",
+    ],
+)
+
+xla_cc_test(
+    name = "dump_test",
+    srcs = ["dump_test.cc"],
+    deps = [
+        ":dump",
+        ":hlo_module_config",
+        ":hlo_parser",
+        "//xla:xla_proto_cc",
+        "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/strings",
+        "@local_tsl//tsl/platform:env",
+        "@local_tsl//tsl/platform:path",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:test",
     ],
 )
 
