@@ -22,14 +22,16 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/container/fixed_array.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/synchronization/blocking_counter.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "xla/service/cpu/runtime/thunk.h"
+#include "xla/tsl/concurrency/async_value_ref.h"
 
 namespace xla::cpu {
 
@@ -38,6 +40,8 @@ namespace xla::cpu {
 // thunks concurrently in a given thread pool.
 class ThunkExecutor {
  public:
+  using ExecuteEvent = Thunk::ExecuteEvent;
+
   // It's up to the caller to provide the task runner that will execute tasks
   // produced by the executor. It can be a simple inline executor that runs
   // tasks on the same thread, or a runner backed by a thread pool.
@@ -64,8 +68,11 @@ class ThunkExecutor {
   // Executes the thunk sequence using the prepared dataflow graph. Executor
   // uses runner to execute ready tasks concurrently. If runner is not provided,
   // executes all tasks in the caller thread.
-  absl::Status Execute(const Thunk::ExecuteParams& params,
-                       TaskRunner runner = nullptr);
+  //
+  // Returned execute event becomes ready when all thunks completed execution.
+  // If any of the thunks failed, the event will be in error state.
+  tsl::AsyncValueRef<ExecuteEvent> Execute(const Thunk::ExecuteParams& params,
+                                           TaskRunner runner = nullptr);
 
   absl::Span<const NodeDef> nodes_defs() const { return nodes_defs_; }
   const NodeDef& node_def(NodeId id) const { return nodes_defs_[id]; }
@@ -95,19 +102,32 @@ class ThunkExecutor {
     ThunkExecutor* executor;
     TaskRunner runner;
 
+    // Containers for nodes' pending counters and nodes themselves.
     absl::FixedArray<std::atomic<int64_t>> counters;
     absl::InlinedVector<Node, 32> nodes;
-    absl::BlockingCounter done;
+
+    // We store the first error from failed thunks in `abort_status` and at the
+    // end of execution the executor forwards it via the `execute_event`.
+    std::atomic<bool> abort;
+    absl::Mutex abort_mutex;
+    absl::Status abort_status ABSL_GUARDED_BY(abort_mutex);
+
+    // Once the number of pending sink nodes drops to zero, the execution is
+    // completed and we set `execute_event` as concrete or error.
+    std::atomic<int64_t> pending_sink_nodes;
+    tsl::AsyncValueRef<ExecuteEvent> execute_event;
   };
 
   // Executes nodes in the ready queue with given thunk parameters.
-  absl::Status Execute(ExecuteState* state, const Thunk::ExecuteParams& params,
-                       ReadyQueue ready_queue);
+  void Execute(ExecuteState* state, const Thunk::ExecuteParams& params,
+               ReadyQueue ready_queue);
 
   // Processes out edges of a completed `node` and updates `ready_queue` with
-  // nodes that are ready to execute.
-  void ProcessOutEdges(ExecuteState* state, Node& node,
-                       ReadyQueue& ready_queue);
+  // nodes that are ready to execute. If `event` is in error state, aborts the
+  // execution and records the error status to forward it to the caller.
+  void ProcessOutEdges(ExecuteState* state,
+                       tsl::AsyncValuePtr<Thunk::ExecuteEvent> node_event,
+                       Node& node, ReadyQueue& ready_queue);
 
   ThunkSequence thunk_sequence_;
   std::vector<NodeDef> nodes_defs_;

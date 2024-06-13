@@ -128,6 +128,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_enable_all_gather_combine_by_dim(true);
   opts.set_xla_gpu_enable_reduce_scatter_combine_by_dim(true);
   opts.set_xla_gpu_enable_all_reduce_splitter(true);
+  opts.set_xla_gpu_enable_approx_costly_collectives(false);
 
   opts.set_xla_gpu_enable_reassociation_for_converted_ar(true);
 
@@ -1087,6 +1088,13 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "Splits cross-device all reduce into logical reduce scatter followed by "
       "dynamic slice and all reduce."));
   flag_list->push_back(tsl::Flag(
+      "xla_gpu_enable_approx_costly_collectives",
+      bool_setter_for(
+          &DebugOptions::set_xla_gpu_enable_approx_costly_collectives),
+      debug_options->xla_gpu_enable_approx_costly_collectives(),
+      "Enables more accurate latency approximation of collectives. Used in "
+      "`ApproximateLatencyEstimator` scheduler."));
+  flag_list->push_back(tsl::Flag(
       "xla_gpu_all_reduce_blueconnect_num_devices_per_host",
       int32_setter_for(
           &DebugOptions::
@@ -1723,6 +1731,14 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       debug_options->xla_gpu_shard_autotuning(),
       "Shard autotuning between participating compiler processes (typically in "
       "multi-host setups) and join the results when it's done."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_kernel_cache_file",
+      string_setter_for(&DebugOptions::set_xla_gpu_kernel_cache_file),
+      debug_options->xla_gpu_kernel_cache_file(),
+      "Path to a file to cache compiled kernels. If the file doesn't exist "
+      "write the compilation cache of the first compiled HLO module into it."
+      "Once the file exists, further compilations will read it to reuse "
+      "the kernels, but not write it. This behavior may change later."));
 }  // NOLINT(readability/fn_size)
 
 // Allocates flag_values and flag_objects; this function must not be called more
