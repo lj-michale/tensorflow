@@ -40,6 +40,7 @@ namespace xla::cpu {
 // thunks concurrently in a given thread pool.
 class ThunkExecutor {
  public:
+  using BufferUses = Thunk::BufferUses;
   using ExecuteEvent = Thunk::ExecuteEvent;
 
   // It's up to the caller to provide the task runner that will execute tasks
@@ -79,6 +80,8 @@ class ThunkExecutor {
 
   absl::Span<const NodeId> source() const { return source_; }
   absl::Span<const NodeId> sink() const { return sink_; }
+
+  BufferUses buffer_uses() const { return thunk_sequence_.buffer_uses(); }
 
   std::string ToString() const;
 
@@ -128,6 +131,12 @@ class ThunkExecutor {
   void ProcessOutEdges(ExecuteState* state,
                        tsl::AsyncValuePtr<Thunk::ExecuteEvent> node_event,
                        Node& node, ReadyQueue& ready_queue);
+
+  // Runs a transitive reduction on the NodeDef graph to remove redundant edges.
+  // Returns the number of removed edges.
+  //
+  // See: https://en.wikipedia.org/wiki/Transitive_reduction
+  int64_t TransitiveReduction();
 
   ThunkSequence thunk_sequence_;
   std::vector<NodeDef> nodes_defs_;

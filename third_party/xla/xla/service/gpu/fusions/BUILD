@@ -835,6 +835,7 @@ cc_library(
         ":fusion_emitter",
         ":reduction_base",
         "//xla:shape_util",
+        "//xla:util",
         "//xla/hlo/ir:hlo",
         "//xla/service/gpu:hlo_fusion_analysis",
         "//xla/service/gpu:hlo_traversal",
@@ -1095,7 +1096,6 @@ xla_test(
         "//xla/service/gpu/model:indexing_test_utils",
         "//xla/tests:xla_internal_test_main",
         "@com_google_googletest//:gtest",
-        "@local_tsl//tsl/lib/core:status_test_util",
     ],
 )
 
@@ -1114,6 +1114,5 @@ xla_cc_test(
         "//xla/tests:xla_internal_test_main",
         "@com_google_googletest//:gtest",
         "@llvm-project//mlir:IR",
-        "@local_tsl//tsl/platform:statusor",
     ],
 )

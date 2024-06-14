@@ -65,7 +65,7 @@ std::string Thunk::TraceMeEncode() const {
   return tsl::profiler::TraceMeEncode(info_.op_name,
                                       {{"hlo_op", info_.op_name},
                                        {"hlo_module", info_.module_name},
-                                       {"hlo_module_id", info_.module_id}});
+                                       {"program_id", info_.module_id}});
 }
 
 std::ostream& operator<<(std::ostream& os, Thunk::Kind kind) {
@@ -82,17 +82,6 @@ void ThunkSequence::Append(ThunkSequence other) {
   for (auto& thunk : other) {
     push_back(std::move(thunk));
   }
-}
-
-tsl::AsyncValueRef<Thunk::ExecuteEvent> ThunkSequence::Execute(
-    const Thunk::ExecuteParams& params) {
-  VLOG(2) << "Execute thunk sequence of size " << size();
-  for (auto& thunk : *this) {
-    auto event = thunk->Execute(params);
-    tsl::BlockUntilReady(event);
-    if (event.IsError()) return event.GetError();
-  }
-  return Thunk::OkExecuteEvent();
 }
 
 ThunkSequence::BufferUses ThunkSequence::buffer_uses() const {

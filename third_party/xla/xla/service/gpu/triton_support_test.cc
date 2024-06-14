@@ -26,14 +26,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "absl/strings/substitute.h"
-#include "xla/hlo/ir/hlo_casting_utils.h"
-#include "xla/hlo/ir/hlo_computation.h"
-#include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
-#include "xla/hlo/utils/hlo_query.h"
-#include "xla/primitive_util.h"
 #include "xla/service/gpu/gpu_device_info_for_tests.h"
 #include "xla/service/gpu/ir_emitter_triton.h"
 #include "xla/service/gpu/matmul_utils.h"
@@ -55,13 +48,9 @@ using UnaryElementwiseTest = TritonSupportTestWithParam;
 // TODO(b/331636835): updates elementwise op tests to directly emit single op
 // instead of relying on triton gemm kernel.
 TEST_P(UnaryElementwiseTest, IsTritonSupportedUnaryElementwise) {
-  PrimitiveType data_type;
-  HloOpcode opcode;
-  std::tie(data_type, opcode) = GetParam();
-  if (!GetCudaComputeCapability().IsAtLeast(
-          se::CudaComputeCapability::AMPERE) &&
-      data_type == BF16) {
-    GTEST_SKIP() << "No BF16 before Ampere.";
+  auto [data_type, opcode] = GetParam();
+  if (data_type == BF16 && SkipBF16Tests()) {
+    GTEST_SKIP();
   }
 
   const std::string kHloTestTemplate = R"(
@@ -77,25 +66,20 @@ ENTRY e {
     kind=kCustom, calls=triton_computation,
     backend_config={"fusion_backend_config":{"kind":"__triton"}}
 })";
-  const std::string hlo_test = absl::Substitute(
-      kHloTestTemplate, primitive_util::LowercasePrimitiveTypeName(data_type),
-      HloOpcodeString(opcode));
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
-                          ParseAndReturnVerifiedModule(hlo_test));
-  const HloComputation* computation =
-      module->GetComputationWithName("triton_computation");
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr =
-      hlo_query::GetFirstInstructionWithOpcode(*computation, opcode);
-  if (IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())) {
-    TF_EXPECT_OK(ApplyFloatNormalization(module.get()));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      TestedInstruction ti,
+      ParseTemplateAndGetInstruction(kHloTestTemplate, data_type, opcode));
+  if (IsTritonSupportedInstruction(ti.Instruction(),
+                                   GetCudaComputeCapability())) {
+    TF_EXPECT_OK(ApplyFloatNormalization(ti.Module().get()));
     TF_EXPECT_OK(CreateTritonIrAndFileCheck(
-        *computation, /*config=*/{}, /*output_tile_sizes=*/{1, 32}, EmitGeneric,
-        "CHECK: tt.func @triton_fn"));
+        ti.TritonComputation(), /*config=*/{}, /*output_tile_sizes=*/{1, 32},
+        EmitGeneric, "CHECK: tt.func @triton_fn"));
   } else {
     // TODO(b/331632717): update the check to use SymbolicTileAnalysis to avoid
     // tiling failures and check triton emitter fails gracefully.
-    EXPECT_THAT(TritonFusionAnalysis::Execute(*computation),
+    EXPECT_THAT(TritonFusionAnalysis::Execute(ti.TritonComputation()),
                 tsl::testing::StatusIs(
                     absl::StatusCode::kFailedPrecondition,
                     ::testing::HasSubstr(
@@ -129,13 +113,9 @@ INSTANTIATE_TEST_SUITE_P(
 using BinaryElementwiseTest = TritonSupportTestWithParam;
 
 TEST_P(BinaryElementwiseTest, IsTritonSupportedBinaryElementwise) {
-  PrimitiveType data_type;
-  HloOpcode opcode;
-  std::tie(data_type, opcode) = GetParam();
-  if (!GetCudaComputeCapability().IsAtLeast(
-          se::CudaComputeCapability::AMPERE) &&
-      data_type == BF16) {
-    GTEST_SKIP() << "No BF16 before Ampere.";
+  auto [data_type, opcode] = GetParam();
+  if (data_type == BF16 && SkipBF16Tests()) {
+    GTEST_SKIP();
   }
 
   const std::string kHloTestTemplate = R"(
@@ -152,23 +132,17 @@ ENTRY e {
     kind=kCustom, calls=triton_computation,
     backend_config={"fusion_backend_config":{"kind":"__triton"}}
 })";
-  const std::string hlo_test = absl::Substitute(
-      kHloTestTemplate, primitive_util::LowercasePrimitiveTypeName(data_type),
-      HloOpcodeString(opcode));
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
-                          ParseAndReturnVerifiedModule(hlo_test));
-  const HloComputation* computation =
-      module->GetComputationWithName("triton_computation");
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr =
-      hlo_query::GetFirstInstructionWithOpcode(*computation, opcode);
-  if (IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())) {
-    TF_EXPECT_OK(ApplyFloatNormalization(module.get()));
+  TF_ASSERT_OK_AND_ASSIGN(
+      TestedInstruction ti,
+      ParseTemplateAndGetInstruction(kHloTestTemplate, data_type, opcode));
+  if (IsTritonSupportedInstruction(ti.Instruction(),
+                                   GetCudaComputeCapability())) {
+    TF_EXPECT_OK(ApplyFloatNormalization(ti.Module().get()));
     TF_EXPECT_OK(CreateTritonIrAndFileCheck(
-        *computation, /*config=*/{}, /*output_tile_sizes=*/{1, 32}, EmitGeneric,
-        "CHECK: tt.func @triton_fn"));
+        ti.TritonComputation(), /*config=*/{}, /*output_tile_sizes=*/{1, 32},
+        EmitGeneric, "CHECK: tt.func @triton_fn"));
   } else {
-    EXPECT_THAT(TritonFusionAnalysis::Execute(*computation),
+    EXPECT_THAT(TritonFusionAnalysis::Execute(ti.TritonComputation()),
                 ::testing::AnyOf(
                     tsl::testing::StatusIs(
                         absl::StatusCode::kInternal,
@@ -206,13 +180,9 @@ INSTANTIATE_TEST_SUITE_P(
 using CompareTest = TritonSupportTestWithParam;
 
 TEST_P(CompareTest, IsTritonSupportedCompare) {
-  PrimitiveType data_type;
-  HloOpcode opcode;
-  std::tie(data_type, opcode) = GetParam();
-  if (!GetCudaComputeCapability().IsAtLeast(
-          se::CudaComputeCapability::AMPERE) &&
-      data_type == BF16) {
-    GTEST_SKIP() << "No BF16 before Ampere.";
+  auto [data_type, opcode] = GetParam();
+  if (data_type == BF16 && SkipBF16Tests()) {
+    GTEST_SKIP();
   }
 
   const std::string kHloTestTemplate = R"(
@@ -230,24 +200,18 @@ ENTRY e {
     kind=kCustom, calls=triton_computation,
     backend_config={"fusion_backend_config":{"kind":"__triton"}}
 })";
-  const std::string hlo_test = absl::Substitute(
-      kHloTestTemplate, primitive_util::LowercasePrimitiveTypeName(data_type),
-      HloOpcodeString(opcode));
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
-                          ParseAndReturnVerifiedModule(hlo_test));
-  const HloComputation* computation =
-      module->GetComputationWithName("triton_computation");
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr =
-      hlo_query::GetFirstInstructionWithOpcode(*computation, opcode);
-  if (IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())) {
-    TF_EXPECT_OK(ApplyFloatNormalization(module.get()));
+  TF_ASSERT_OK_AND_ASSIGN(
+      TestedInstruction ti,
+      ParseTemplateAndGetInstruction(kHloTestTemplate, data_type, opcode));
+  if (IsTritonSupportedInstruction(ti.Instruction(),
+                                   GetCudaComputeCapability())) {
+    TF_EXPECT_OK(ApplyFloatNormalization(ti.Module().get()));
     TF_EXPECT_OK(CreateTritonIrAndFileCheck(
-        *computation, /*config=*/{}, /*output_tile_sizes=*/{1, 32}, EmitGeneric,
-        "CHECK: tt.func @triton_fn"));
+        ti.TritonComputation(), /*config=*/{}, /*output_tile_sizes=*/{1, 32},
+        EmitGeneric, "CHECK: tt.func @triton_fn"));
   } else {
     EXPECT_THAT(
-        TritonFusionAnalysis::Execute(*computation),
+        TritonFusionAnalysis::Execute(ti.TritonComputation()),
         tsl::testing::StatusIs(
             absl::StatusCode::kInternal,
             ::testing::HasSubstr("std::holds_alternative<DimOrdersAndReqs>")));
@@ -263,13 +227,9 @@ INSTANTIATE_TEST_SUITE_P(
 using TernaryElementwiseTest = TritonSupportTestWithParam;
 
 TEST_P(TernaryElementwiseTest, IsTritonSupportedTernaryElementwise) {
-  PrimitiveType data_type;
-  HloOpcode opcode;
-  std::tie(data_type, opcode) = GetParam();
-  if (!GetCudaComputeCapability().IsAtLeast(
-          se::CudaComputeCapability::AMPERE) &&
-      data_type == BF16) {
-    GTEST_SKIP() << "No BF16 before Ampere.";
+  auto [data_type, opcode] = GetParam();
+  if (data_type == BF16 && SkipBF16Tests()) {
+    GTEST_SKIP();
   }
 
   const std::string kHloTestTemplate = R"(
@@ -289,24 +249,18 @@ ENTRY e {
     kind=kCustom, calls=triton_computation,
     backend_config={"fusion_backend_config":{"kind":"__triton"}}
 })";
-  const std::string hlo_test = absl::Substitute(
-      kHloTestTemplate, primitive_util::LowercasePrimitiveTypeName(data_type),
-      HloOpcodeString(opcode));
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
-                          ParseAndReturnVerifiedModule(hlo_test));
-  const HloComputation* computation =
-      module->GetComputationWithName("triton_computation");
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr =
-      hlo_query::GetFirstInstructionWithOpcode(*computation, opcode);
-  if (IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())) {
-    TF_EXPECT_OK(ApplyFloatNormalization(module.get()));
+  TF_ASSERT_OK_AND_ASSIGN(
+      TestedInstruction ti,
+      ParseTemplateAndGetInstruction(kHloTestTemplate, data_type, opcode));
+  if (IsTritonSupportedInstruction(ti.Instruction(),
+                                   GetCudaComputeCapability())) {
+    TF_EXPECT_OK(ApplyFloatNormalization(ti.Module().get()));
     TF_EXPECT_OK(CreateTritonIrAndFileCheck(
-        *computation, /*config=*/{}, /*output_tile_sizes=*/{1, 32}, EmitGeneric,
-        "CHECK: tt.func @triton_fn"));
+        ti.TritonComputation(), /*config=*/{}, /*output_tile_sizes=*/{1, 32},
+        EmitGeneric, "CHECK: tt.func @triton_fn"));
   } else {
     EXPECT_THAT(
-        TritonFusionAnalysis::Execute(*computation),
+        TritonFusionAnalysis::Execute(ti.TritonComputation()),
         tsl::testing::StatusIs(
             absl::StatusCode::kInternal,
             ::testing::HasSubstr("std::holds_alternative<DimOrdersAndReqs>")));
@@ -321,13 +275,9 @@ INSTANTIATE_TEST_SUITE_P(
 
 using ReduceConstTest = TritonSupportTestWithParam;
 TEST_P(ReduceConstTest, IsTritonSupportedReduceWithConstInit) {
-  PrimitiveType data_type;
-  HloOpcode opcode;
-  std::tie(data_type, opcode) = GetParam();
-  if (!GetCudaComputeCapability().IsAtLeast(
-          se::CudaComputeCapability::AMPERE) &&
-      data_type == BF16) {
-    GTEST_SKIP() << "No BF16 before Ampere.";
+  auto [data_type, opcode] = GetParam();
+  if (data_type == BF16 && SkipBF16Tests()) {
+    GTEST_SKIP();
   }
 
   const std::string kHloTestTemplate = R"(
@@ -351,29 +301,22 @@ ENTRY main {
                           backend_config={"fusion_backend_config":
                                            {"kind":"__triton"}}
 })";
-  const std::string hlo_test = absl::Substitute(
-      kHloTestTemplate, primitive_util::LowercasePrimitiveTypeName(data_type),
-      HloOpcodeString(opcode));
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
-                          ParseAndReturnVerifiedModule(hlo_test));
-
-  const HloFusionInstruction* fusion = Cast<HloFusionInstruction>(
-      module->entry_computation()->root_instruction());
-  const HloComputation* computation = fusion->fused_instructions_computation();
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr =
-      hlo_query::GetFirstInstructionWithOpcode(*computation, opcode);
-  if (IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())) {
-    TF_EXPECT_OK(ApplyFloatNormalization(module.get()));
+  TF_ASSERT_OK_AND_ASSIGN(
+      TestedInstruction ti,
+      ParseTemplateAndGetInstruction(kHloTestTemplate, data_type, opcode));
+  if (IsTritonSupportedInstruction(ti.Instruction(),
+                                   GetCudaComputeCapability())) {
+    TF_EXPECT_OK(ApplyFloatNormalization(ti.Module().get()));
     TF_EXPECT_OK(CreateTritonIrAndFileCheck(
-        *computation, /*config=*/{}, /*output_tile_sizes=*/{1}, EmitGeneric,
-        "CHECK: tt.func @triton_fn"));
+        ti.TritonComputation(), /*config=*/{}, /*output_tile_sizes=*/{1},
+        EmitGeneric, "CHECK: tt.func @triton_fn"));
   } else {
     const se::DeviceDescription dev_info =
         TestGpuDeviceInfo::RTXA6000DeviceInfo(GetCudaComputeCapability());
     EXPECT_THAT(
-        TritonWrapper(*TritonFusionAnalysis::Execute(*computation), "test_fn",
-                      fusion, GetCudaComputeCapability(), dev_info,
+        TritonWrapper(*TritonFusionAnalysis::Execute(ti.TritonComputation()),
+                      "test_fn", &ti.TritonFusion(), GetCudaComputeCapability(),
+                      dev_info,
                       /*config=*/{}, /*output_tile_sizes=*/{1}, &llvm_module_,
                       &EmitGeneric, mlir_context_),
         tsl::testing::StatusIs(
@@ -390,12 +333,10 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_F(TritonSupportTest,
        SupportedReduceWithConvertConstantIsCodegenedSuccessfullyWithTriton) {
-  if (!GetCudaComputeCapability().IsAtLeast(
-          se::CudaComputeCapability::AMPERE)) {
-    GTEST_SKIP() << "No BF16 before Ampere.";
+  if (SkipBF16Tests()) {
+    GTEST_SKIP();
   }
   const std::string kHloTest = R"(
-HloModule t
 add {
   Arg_0 = f32[] parameter(0)
   Arg_1 = f32[] parameter(1)
@@ -416,27 +357,22 @@ ENTRY main {
                         backend_config={"fusion_backend_config":
                         {"kind":"__triton"}}
 })";
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
-                          ParseAndReturnVerifiedModule(kHloTest));
-
-  const HloComputation* computation =
-      module->GetComputationWithName("triton_computation");
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr = hlo_query::GetFirstInstructionWithOpcode(
-      *computation, HloOpcode::kReduce);
-  EXPECT_TRUE(IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())
-                  .CanFuse());
-  TF_EXPECT_OK(ApplyFloatNormalization(module.get()));
+  TF_ASSERT_OK_AND_ASSIGN(TestedInstruction ti,
+                          ParseTemplateAndGetInstruction(
+                              kHloTest, /*data_type=*/{}, HloOpcode::kReduce));
+  EXPECT_TRUE(
+      IsTritonSupportedInstruction(ti.Instruction(), GetCudaComputeCapability())
+          .CanFuse());
+  TF_EXPECT_OK(ApplyFloatNormalization(ti.Module().get()));
   TF_EXPECT_OK(CreateTritonIrAndFileCheck(
-      *computation, /*config=*/{}, /*output_tile_sizes=*/{1}, EmitGeneric,
-      "CHECK: tt.func @triton_fn"));
+      ti.TritonComputation(), /*config=*/{}, /*output_tile_sizes=*/{1},
+      EmitGeneric, "CHECK: tt.func @triton_fn"));
 }
 
 TEST_F(
     TritonSupportTest,
     UnsupportedReduceWithMoreThanOneReduceDimensionsFailsGracefullyWithTriton) {
   const std::string kHloTest = R"(
-HloModule t
 add {
   Arg_0 = f32[] parameter(0)
   Arg_1 = f32[] parameter(1)
@@ -456,19 +392,15 @@ ENTRY main {
                           backend_config={"fusion_backend_config":
                                             {"kind":"__triton"}}
 })";
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> hlo_module,
-                          ParseAndReturnVerifiedModule(kHloTest));
-
-  const HloComputation* computation =
-      hlo_module->GetComputationWithName("triton_computation");
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr = hlo_query::GetFirstInstructionWithOpcode(
-      *computation, HloOpcode::kReduce);
-  EXPECT_THAT(IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())
-                  .Explain(),
-              ::testing::HasSubstr(
-                  "Reduction is not a row-reduction of a single operand."));
-  EXPECT_THAT(TritonFusionAnalysis::Execute(*computation),
+  TF_ASSERT_OK_AND_ASSIGN(TestedInstruction ti,
+                          ParseTemplateAndGetInstruction(
+                              kHloTest, /*data_type=*/{}, HloOpcode::kReduce));
+  EXPECT_THAT(
+      IsTritonSupportedInstruction(ti.Instruction(), GetCudaComputeCapability())
+          .Explain(),
+      ::testing::HasSubstr(
+          "Reduction is not a row-reduction of a single operand."));
+  EXPECT_THAT(TritonFusionAnalysis::Execute(ti.TritonComputation()),
               tsl::testing::StatusIs(
                   absl::StatusCode::kFailedPrecondition,
                   ::testing::HasSubstr(
@@ -478,7 +410,6 @@ ENTRY main {
 TEST_F(TritonSupportTest,
        UnsupportedReduceWithNonLastReduceDimensionFailsGracefullyWithTriton) {
   const std::string kHloTest = R"(
-HloModule t
 add {
   Arg_0 = f32[] parameter(0)
   Arg_1 = f32[] parameter(1)
@@ -498,19 +429,15 @@ ENTRY main {
                           backend_config={"fusion_backend_config":
                                             {"kind":"__triton"}}
 })";
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> hlo_module,
-                          ParseAndReturnVerifiedModule(kHloTest));
-
-  const HloComputation* computation =
-      hlo_module->GetComputationWithName("triton_computation");
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr = hlo_query::GetFirstInstructionWithOpcode(
-      *computation, HloOpcode::kReduce);
-  EXPECT_THAT(IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())
-                  .Explain(),
-              ::testing::HasSubstr(
-                  "Reduction is not a row-reduction of a single operand."));
-  EXPECT_THAT(TritonFusionAnalysis::Execute(*computation),
+  TF_ASSERT_OK_AND_ASSIGN(TestedInstruction ti,
+                          ParseTemplateAndGetInstruction(
+                              kHloTest, /*data_type=*/{}, HloOpcode::kReduce));
+  EXPECT_THAT(
+      IsTritonSupportedInstruction(ti.Instruction(), GetCudaComputeCapability())
+          .Explain(),
+      ::testing::HasSubstr(
+          "Reduction is not a row-reduction of a single operand."));
+  EXPECT_THAT(TritonFusionAnalysis::Execute(ti.TritonComputation()),
               tsl::testing::StatusIs(
                   absl::StatusCode::kFailedPrecondition,
                   ::testing::HasSubstr(
@@ -520,7 +447,6 @@ ENTRY main {
 TEST_F(TritonSupportTest,
        UnsupportedReduceWithMoreThanOneOperandsFailsGracefullyWithTriton) {
   const std::string kHloTest = R"(
-HloModule t
 add {
   Arg_0 = f32[] parameter(0)
   Arg_2 = f32[] parameter(1)
@@ -545,19 +471,14 @@ ENTRY main {
                           backend_config={"fusion_backend_config":
                                            {"kind":"__triton"}}
 })";
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> hlo_module,
-                          ParseAndReturnVerifiedModule(kHloTest));
-
-  const HloComputation* computation =
-      hlo_module->GetComputationWithName("triton_computation");
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr = hlo_query::GetFirstInstructionWithOpcode(
-      *computation, HloOpcode::kReduce);
+  TF_ASSERT_OK_AND_ASSIGN(TestedInstruction ti,
+                          ParseTemplateAndGetInstruction(
+                              kHloTest, /*data_type=*/{}, HloOpcode::kReduce));
   EXPECT_THAT(
-      IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())
+      IsTritonSupportedInstruction(ti.Instruction(), GetCudaComputeCapability())
           .Explain(),
       ::testing::HasSubstr("Unsupported output data type for Reduce op."));
-  EXPECT_THAT(TritonFusionAnalysis::Execute(*computation),
+  EXPECT_THAT(TritonFusionAnalysis::Execute(ti.TritonComputation()),
               tsl::testing::StatusIs(
                   absl::StatusCode::kFailedPrecondition,
                   ::testing::HasSubstr(
@@ -567,7 +488,6 @@ ENTRY main {
 TEST_F(TritonSupportTest,
        UnsupportedReduceWithNonConstReduceValueFailsGracefullyWithTriton) {
   const std::string kHloTest = R"(
-HloModule t
 add {
   Arg_0 = f32[] parameter(0)
   Arg_1 = f32[] parameter(1)
@@ -588,24 +508,21 @@ ENTRY main {
                         backend_config={"fusion_backend_config":
                                          {"kind":"__triton"}}
 })";
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> hlo_module,
-                          ParseAndReturnVerifiedModule(kHloTest));
-
-  const HloFusionInstruction* fusion = Cast<HloFusionInstruction>(
-      hlo_module->entry_computation()->root_instruction());
-  const HloComputation* computation = fusion->fused_instructions_computation();
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr = hlo_query::GetFirstInstructionWithOpcode(
-      *computation, HloOpcode::kReduce);
+  TF_ASSERT_OK_AND_ASSIGN(TestedInstruction ti,
+                          ParseTemplateAndGetInstruction(
+                              kHloTest, /*data_type=*/{}, HloOpcode::kReduce));
   const se::DeviceDescription dev_info =
       TestGpuDeviceInfo::RTXA6000DeviceInfo(GetCudaComputeCapability());
-  EXPECT_THAT(IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())
-                  .Explain(),
-              ::testing::HasSubstr("Reduction init value should be a constant "
-                                   "or a convert of a constant."));
   EXPECT_THAT(
-      TritonWrapper(*TritonFusionAnalysis::Execute(*computation), "test_fn",
-                    fusion, GetCudaComputeCapability(), dev_info, /*config=*/{},
+      IsTritonSupportedInstruction(ti.Instruction(), GetCudaComputeCapability())
+          .Explain(),
+      ::testing::HasSubstr("Reduction init value should be a constant "
+                           "or a convert of a constant."));
+  EXPECT_THAT(
+      TritonWrapper(*TritonFusionAnalysis::Execute(ti.TritonComputation()),
+                    "test_fn", &ti.TritonFusion(), GetCudaComputeCapability(),
+                    dev_info,
+                    /*config=*/{},
                     /*output_tile_sizes=*/{1}, &llvm_module_, &EmitGeneric,
                     mlir_context_),
       tsl::testing::StatusIs(
@@ -616,7 +533,6 @@ ENTRY main {
 TEST_F(TritonSupportTest,
        UnsupportedReductionComputationFailsGracefullyWithTriton) {
   const std::string kHloTest = R"(
-HloModule t
 custom_call {
   Arg_0 = f32[] parameter(0)
   Arg_1 = f32[] parameter(1)
@@ -636,24 +552,20 @@ ENTRY main {
                           backend_config={"fusion_backend_config":
                                          {"kind":"__triton"}}
 })";
-  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> hlo_module,
-                          ParseAndReturnVerifiedModule(kHloTest));
-
-  const HloFusionInstruction* fusion = Cast<HloFusionInstruction>(
-      hlo_module->entry_computation()->root_instruction());
-  const HloComputation* computation = fusion->fused_instructions_computation();
-  ASSERT_TRUE(computation != nullptr);
-  const HloInstruction* instr = hlo_query::GetFirstInstructionWithOpcode(
-      *computation, HloOpcode::kReduce);
+  TF_ASSERT_OK_AND_ASSIGN(TestedInstruction ti,
+                          ParseTemplateAndGetInstruction(
+                              kHloTest, /*data_type=*/{}, HloOpcode::kReduce));
   const se::DeviceDescription dev_info =
       TestGpuDeviceInfo::RTXA6000DeviceInfo(GetCudaComputeCapability());
   EXPECT_THAT(
-      IsTritonSupportedInstruction(*instr, GetCudaComputeCapability())
+      IsTritonSupportedInstruction(ti.Instruction(), GetCudaComputeCapability())
           .Explain(),
       ::testing::HasSubstr("Unsupported reduction computation by Triton."));
   EXPECT_THAT(
-      TritonWrapper(*TritonFusionAnalysis::Execute(*computation), "test_fn",
-                    fusion, GetCudaComputeCapability(), dev_info, /*config=*/{},
+      TritonWrapper(*TritonFusionAnalysis::Execute(ti.TritonComputation()),
+                    "test_fn", &ti.TritonFusion(), GetCudaComputeCapability(),
+                    dev_info,
+                    /*config=*/{},
                     /*output_tile_sizes=*/{1}, &llvm_module_, &EmitGeneric,
                     mlir_context_),
       tsl::testing::StatusIs(absl::StatusCode::kInvalidArgument,
