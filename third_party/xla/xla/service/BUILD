@@ -1406,6 +1406,8 @@ cc_library(
         "//xla/hlo/ir:hlo",
         "//xla/hlo/utils:hlo_query",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/strings:string_view",
         "@local_tsl//tsl/profiler/protobuf:profiled_instructions_proto_cc_impl",
     ],
 )
@@ -3294,7 +3296,6 @@ xla_cc_test(
         "//xla/hlo/utils:hlo_matchers",
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",  # fixdeps: keep
-        "@com_google_googletest//:gtest_main",
     ],
 )
 
